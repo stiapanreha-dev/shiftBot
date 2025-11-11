@@ -1,0 +1,42 @@
+[Unit]
+Description=Alex12060 Sync Worker - Bidirectional sync between SQLite and Google Sheets
+Documentation=file:///home/lexun/Alex12060/CHANGELOG_BIDIRECTIONAL_SYNC.md
+After=network.target
+# Make sync worker start after bot (optional dependency)
+Wants=alex12060-bot.service
+
+[Service]
+Type=simple
+User=lexun
+WorkingDirectory=/home/lexun/Alex12060
+Environment="PYTHONUNBUFFERED=1"
+
+# Main command
+ExecStart=/home/lexun/Alex12060/venv/bin/python3 /home/lexun/Alex12060/sync_worker.py --interval 300
+
+# Restart policy
+Restart=always
+RestartSec=30
+
+# Logging
+StandardOutput=append:/home/lexun/Alex12060/sync_worker.log
+StandardError=append:/home/lexun/Alex12060/sync_worker.log
+
+# Resource limits
+# Limit memory to 256MB (sync worker is lightweight)
+MemoryMax=256M
+
+# CPU limit (10% of one core)
+CPUQuota=10%
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

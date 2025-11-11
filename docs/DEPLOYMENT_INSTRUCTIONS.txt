@@ -1,0 +1,309 @@
+═══════════════════════════════════════════════════════════════════
+  TELEGRAM SHIFT TRACKING BOT - ИНСТРУКЦИЯ ПО РАЗВЕРТЫВАНИЮ
+═══════════════════════════════════════════════════════════════════
+
+📦 СОДЕРЖИМОЕ АРХИВА:
+
+├── bot.py                              # Главный файл бота
+├── config.py                           # Конфигурация
+├── time_utils.py                       # Утилиты работы с временем
+├── sheets_service.py                   # Сервис Google Sheets
+├── keyboards.py                        # Клавиатуры бота
+├── handlers.py                         # Обработчики событий
+├── requirements.txt                    # Зависимости Python
+├── .env                                # Настройки (ГОТОВ К ИСПОЛЬЗОВАНИЮ)
+├── .env.example                        # Пример настроек
+├── .gitignore                          # Git ignore
+├── google_sheets_credentials.json      # Credentials Google (ГОТОВ)
+├── README.md                           # Документация
+└── check_sheets.py                     # Скрипт проверки Google Sheets
+
+═══════════════════════════════════════════════════════════════════
+  БЫСТРЫЙ СТАРТ
+═══════════════════════════════════════════════════════════════════
+
+1. РАСПАКОВАТЬ АРХИВ:
+   tar -xzf shift_tracking_bot.tar.gz
+   cd shift_tracking_bot
+
+2. УСТАНОВИТЬ ЗАВИСИМОСТИ:
+   pip3 install -r requirements.txt
+
+3. ПРОВЕРИТЬ GOOGLE SHEETS:
+   python3 check_sheets.py
+
+4. ЗАПУСТИТЬ БОТА:
+   python3 bot.py
+
+5. ОТКРЫТЬ TELEGRAM И ОТПРАВИТЬ /start БОТУ
+
+═══════════════════════════════════════════════════════════════════
+  ПОДРОБНАЯ ИНСТРУКЦИЯ
+═══════════════════════════════════════════════════════════════════
+
+▸ ШАГ 1: ТРЕБОВАНИЯ
+
+  - Python 3.8 или выше
+  - pip (менеджер пакетов Python)
+  - Доступ к интернету
+
+▸ ШАГ 2: РАСПАКОВКА
+
+  Linux/Mac:
+    tar -xzf shift_tracking_bot.tar.gz
+    cd shift_tracking_bot
+
+  Windows:
+    Использовать 7-Zip или WinRAR для распаковки
+
+▸ ШАГ 3: ВИРТУАЛЬНОЕ ОКРУЖЕНИЕ (РЕКОМЕНДУЕТСЯ)
+
+  Linux/Mac:
+    python3 -m venv venv
+    source venv/bin/activate
+
+  Windows:
+    python -m venv venv
+    venv\Scripts\activate
+
+▸ ШАГ 4: УСТАНОВКА ЗАВИСИМОСТЕЙ
+
+    pip3 install -r requirements.txt
+
+  Зависимости:
+    - python-telegram-bot==21.0
+    - gspread==6.1.2
+    - google-auth==2.32.0
+    - python-dotenv==1.0.1
+    - pytz==2024.1
+
+▸ ШАГ 5: ПРОВЕРКА НАСТРОЕК
+
+  Файл .env уже настроен и содержит:
+    ✓ BOT_TOKEN - токен Telegram бота
+    ✓ SPREADSHEET_ID - ID Google таблицы
+    ✓ PRODUCTS - список продуктов (Model A, Model B, Model C)
+    ✓ COMMISSION_RATE - комиссия (20%)
+    ✓ PAYOUT_RATE - выплата (100%)
+
+  Если нужно изменить продукты - отредактируйте .env:
+    PRODUCTS=Product 1,Product 2,Product 3
+
+▸ ШАГ 6: ПРОВЕРКА GOOGLE SHEETS
+
+  Запустите проверку таблицы:
+    python3 check_sheets.py
+
+  Должны увидеть:
+    ✅ Google Sheets client initialized successfully
+    ✅ Worksheet 'Shifts' found/created
+    ✅ Headers set successfully
+    ✅ Google Sheets is ready!
+
+▸ ШАГ 7: ЗАПУСК БОТА
+
+  Запустите бота:
+    python3 bot.py
+
+  Должны увидеть:
+    INFO - Configuration validated successfully
+    INFO - Bot started - polling for updates...
+    INFO - Products configured: Model A, Model B, Model C
+    INFO - Application started
+
+  Бот запущен и работает!
+
+═══════════════════════════════════════════════════════════════════
+  ИСПОЛЬЗОВАНИЕ БОТА
+═══════════════════════════════════════════════════════════════════
+
+▸ КОМАНДЫ:
+
+  /start - Начать работу с ботом
+
+▸ СОЗДАНИЕ СМЕНЫ:
+
+  1. /start → "Create new shift"
+  2. Выбрать дату начала (Server date / Server date - 1)
+  3. Выбрать время начала (9 AM, 10 AM, и т.д.)
+  4. Выбрать время окончания (5 PM, 6 PM, и т.д.)
+  5. Выбрать продукт (Model A, B или C)
+  6. Ввести сумму продаж (например: 150.00)
+  7. "Add model" - добавить еще продукт
+     ИЛИ
+     "Finish shift" - завершить создание смены
+
+▸ РЕДАКТИРОВАНИЕ СМЕНЫ:
+
+  1. /start → "Edit shift"
+  2. Выбрать смену из последних 3
+  3. Выбрать поле для редактирования:
+     - Clock in (время начала)
+     - Clock out (время окончания)
+     - Total sales (общая сумма)
+  4. Ввести новые данные
+
+▸ РЕЗУЛЬТАТ:
+
+  После создания/редактирования:
+  ✓ Бот покажет сводку
+  ✓ Данные сохранятся в Google Sheets
+  ✓ ID смены будет присвоен автоматически
+
+═══════════════════════════════════════════════════════════════════
+  РАЗВЕРТЫВАНИЕ НА СЕРВЕРЕ (PRODUCTION)
+═══════════════════════════════════════════════════════════════════
+
+▸ ВАРИАНТ 1: systemd (Linux)
+
+  1. Создать service файл:
+     sudo nano /etc/systemd/system/shift-bot.service
+
+  2. Содержимое:
+     [Unit]
+     Description=Telegram Shift Tracking Bot
+     After=network.target
+
+     [Service]
+     Type=simple
+     User=YOUR_USER
+     WorkingDirectory=/path/to/shift_tracking_bot
+     Environment="PATH=/path/to/venv/bin"
+     ExecStart=/path/to/venv/bin/python bot.py
+     Restart=always
+     RestartSec=10
+
+     [Install]
+     WantedBy=multi-user.target
+
+  3. Запустить:
+     sudo systemctl daemon-reload
+     sudo systemctl enable shift-bot
+     sudo systemctl start shift-bot
+
+  4. Проверить статус:
+     sudo systemctl status shift-bot
+
+  5. Просмотр логов:
+     sudo journalctl -u shift-bot -f
+
+▸ ВАРИАНТ 2: screen (простой способ)
+
+  1. Установить screen:
+     sudo apt install screen
+
+  2. Создать сессию:
+     screen -S shift-bot
+
+  3. Запустить бота:
+     python3 bot.py
+
+  4. Отключиться (бот продолжит работать):
+     Нажать Ctrl+A, затем D
+
+  5. Вернуться к боту:
+     screen -r shift-bot
+
+▸ ВАРИАНТ 3: nohup (самый простой)
+
+  1. Запустить в фоне:
+     nohup python3 bot.py > bot.log 2>&1 &
+
+  2. Проверить процесс:
+     ps aux | grep bot.py
+
+  3. Просмотр логов:
+     tail -f bot.log
+
+  4. Остановить:
+     kill $(pgrep -f bot.py)
+
+═══════════════════════════════════════════════════════════════════
+  GOOGLE SHEETS
+═══════════════════════════════════════════════════════════════════
+
+▸ ССЫЛКА НА ТАБЛИЦУ:
+
+  https://docs.google.com/spreadsheets/d/1Z7HVmO3B7d-HWU2dx5v9HD04ZpmkQIzxxCjamcbafWI/edit
+
+▸ СТРУКТУРА ТАБЛИЦЫ (Лист Shifts):
+
+  | Столбец      | Описание                           |
+  |------------- |------------------------------------|
+  | ID           | Номер смены (автоматически)        |
+  | Date         | Дата создания записи               |
+  | EmployeeId   | Telegram ID сотрудника             |
+  | EmployeeName | Имя сотрудника в Telegram          |
+  | Clock in     | Время начала смены                 |
+  | Clock out    | Время окончания смены              |
+  | Model A      | Продажи Model A                    |
+  | Model B      | Продажи Model B                    |
+  | Model C      | Продажи Model C                    |
+  | Total sales  | Общая сумма продаж                 |
+  | Net sales    | Сумма после комиссии (80%)         |
+  | Total made   | Заработок сотрудника               |
+
+▸ ФОРМАТ ВРЕМЕНИ:
+
+  YYYY/MM/DD HH:MM:SS
+  Пример: 2025/10/15 14:30:00
+
+▸ ТАЙМЗОНА:
+
+  America/New_York (UTC-5 с учетом летнего времени)
+
+═══════════════════════════════════════════════════════════════════
+  УСТРАНЕНИЕ ПРОБЛЕМ
+═══════════════════════════════════════════════════════════════════
+
+▸ БОТ НЕ ОТВЕЧАЕТ:
+
+  1. Проверить, что бот запущен:
+     ps aux | grep bot.py
+
+  2. Проверить логи:
+     tail -f bot.log
+
+  3. Проверить BOT_TOKEN в .env
+
+▸ ОШИБКА "ModuleNotFoundError":
+
+  Установить зависимости:
+     pip3 install -r requirements.txt
+
+▸ ОШИБКА GOOGLE SHEETS:
+
+  1. Проверить google_sheets_credentials.json
+  2. Проверить SPREADSHEET_ID в .env
+  3. Убедиться что Service Account имеет доступ к таблице
+  4. Запустить проверку:
+     python3 check_sheets.py
+
+▸ НЕПРАВИЛЬНОЕ ВРЕМЯ:
+
+  Проверить настройку USE_FIXED_UTC_MINUS_5 в .env:
+    - true = фиксированный UTC-5 (без перехода на летнее время)
+    - false = America/New_York (с переходом на летнее время)
+
+═══════════════════════════════════════════════════════════════════
+  КОНТАКТЫ И ПОДДЕРЖКА
+═══════════════════════════════════════════════════════════════════
+
+▸ ТЕХНИЧЕСКАЯ ПОДДЕРЖКА:
+
+  При возникновении проблем:
+  1. Проверить логи бота
+  2. Запустить check_sheets.py
+  3. Проверить настройки в .env
+  4. Обратиться к разработчику с описанием проблемы и логами
+
+▸ ВЕРСИЯ:
+
+  Дата создания: 2025-10-15
+  Версия: 1.0
+
+═══════════════════════════════════════════════════════════════════
+
+                    УДАЧНОЙ РАБОТЫ С БОТОМ! 🚀
+
+═══════════════════════════════════════════════════════════════════

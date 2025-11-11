@@ -1,0 +1,20 @@
+[Unit]
+Description=Alex12060 Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=lexun
+WorkingDirectory=/home/lexun/Alex12060
+ExecStart=/home/lexun/Alex12060/venv/bin/python3 /home/lexun/Alex12060/bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/lexun/Alex12060/bot.log
+StandardError=append:/home/lexun/Alex12060/bot.log
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

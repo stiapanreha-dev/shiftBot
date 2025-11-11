@@ -1,0 +1,751 @@
+1) Ключевые решения (коротко)
+
+Платформа бота: Python + python-telegram-bot (PTB) 20+ или 21.x.
+
+Хранилище состояний: Redis (желательно) или in‑memory (для простого запуска). Поддержка «Назад» реализуется через стек шагов.
+
+Google Таблицы: API через сервисный аккаунт + библиотека gspread.
+
+«Серверное время»: используем IANA‑таймзону America/New_York с учётом DST (летнего времени). Формат для записи YYYY/MM/DD HH/MM/SS (обратите внимание: слэши и в дате, и во времени).
+
+Если принципиально нужна постоянная «UTC‑5» (без DST) — предусмотрим опцию USE_FIXED_UTC_MINUS_5=True, тогда время будет из фиксированного сдвига UTC-05:00.
+
+ID смены: автоинкремент (предыдущий ID + 1). Базово — читаем последний ID в листе и прибавляем 1. Для высокой нагрузки можно добавить мини‑вебхук на Google Apps Script с LockService (описано ниже).
+
+Продукты: список задаётся в конфиге. У каждого продукта — свой столбец в таблице; бот заполняет значение, введённое пользователем.
+
+Сводные поля:
+
+Total sales — сумма по продуктам;
+
+Net sales — Total sales * (1 - COMMISSION_RATE);
+
+Total made (Made during this shift) — по умолчанию = Net sales * PAYOUT_RATE. (Если у вас есть иной алгоритм — коэффициенты выносите в конфиг либо замените формулы прямо в коде.)
+
+Редактирование: доступно для 3 последних смен сотрудника (по EmployeeId) по полю Date (серверное время). Изменяем: Clock in, Clock out, Total sales. Особое правило: при изменении даты в Clock in используем дату из поля Date записи, а не «сегодня»; Clock out — на эту же дату.
+
+2) Архитектура
+
+Компоненты:
+
+Telegram Bot (Python, PTB).
+
+Google Sheets: основной лист Shifts + (опционально) техлист Meta (для устойчивого счётчика ID).
+
+Redis (опционально) — для FSM/стека «Назад».
+
+(Опционально) Google Apps Script (мини‑endpoint) — делает атомарный инкремент ID при высокой конкуренции.
+
+Конфигурация (env или .env):
+
+BOT_TOKEN — токен Telegram.
+
+GOOGLE_SA_JSON — путь к JSON сервисного аккаунта.
+
+SPREADSHEET_ID — ID Гугл‑таблицы.
+
+SHEET_NAME=Shifts.
+
+PRODUCTS='Model A,Model B,Model C'.
+
+COMMISSION_RATE=0.20 (пример).
+
+PAYOUT_RATE=1.00 (пример).
+
+USE_FIXED_UTC_MINUS_5=false (или true — если нужно строго UTC‑5 без DST).
+
+3) Структура Google Таблицы
+
+Лист Shifts (первая строка — заголовки):
+
+ID	Date	EmployeeId	EmployeeName	Clock in	Clock out	Model A	Model B	Model C	Total sales	Net sales	Total made
+
+Date — серверное время (America/New_York) момента завершения формирования смены, в формате YYYY/MM/DD HH/MM/SS.
+
+Clock in / Clock out — полные дата+время в том же формате.
+
+Model X — сумма, введённая пользователем для выбранной модели.
+
+Total sales — сумма по всем модельным столбцам.
+
+Net sales = Total sales * (1 - COMMISSION_RATE)
+
+Total made = Net sales * PAYOUT_RATE
+
+Важно: если изменится список продуктов — добавьте соответствующие столбцы (бот это умеет проверять/добавлять при старте).
+
+4) Машина состояний и клавиатуры
+
+Состояния (FSM):
+
+START → приветствие.
+
+CHOOSE_DATE_IN → выбор даты начала смены:
+
+Server date - 1
+
+Server date
+
+CHOOSE_TIME_IN → 3×4 инлайн‑клавиатура AM (12 AM–11 AM) + 13‑я кнопка «PM». Переключение на экран PM (аналогично) и назад.
+
+CHOOSE_TIME_OUT → аналогично, но дата = текущая серверная дата (в момент выбора).
+
+PICK_PRODUCT → инлайн‑клавиатура из продуктов.
+
+ENTER_AMOUNT → пользователь вводит сумму вручную.
+
+ADD_OR_FINISH → кнопки: Add model и Finish shift.
+
+CONFIRM_SUMMARY → показать сводку, сохранить в Шит.
+
+EDIT_MENU → «Редактировать смену» (последние 3), выбор записи.
+
+EDIT_FIELD → выбор поля (Clock in, Clock out, Total sales), после чего соответствующие подшаги.
+
+EDIT_SAVE → подтверждение/сохранение.
+
+Клавиатуры времени:
+
+Экран AM: 3 ряда × 4 кнопки: 12 AM, 1 AM, 2 AM, 3 AM, затем 4 AM…7 AM, затем 8 AM…11 AM.
+
+13‑я кнопка: → PM.
+
+Экран PM — аналогично, 13‑я: → AM.
+
+На каждом шаге — кнопка ⬅️ Back.
+
+5) Правила по времени и форматированию
+
+Базовая таймзона: America/New_York (учитывает переходы).
+
+Формат записи: %Y/%m/%d %H/%M/%S (например, 2025/03/09 07/15/00).
+
+При выборе времени пользователем минуты и секунды считаем 00, если не указано иное.
+
+Шаг 2: Clock in = выбранная дата (Server date или Server date - 1) + выбранное время.
+
+Шаг 3: Clock out = сегодняшняя серверная дата + выбранное время (дата не выбирается).
+
+Редактирование Clock in (дата): используем дату из поля Date записи как «Server date» той смены; для Clock out — та же дата.
+
+6) Логика «Add model» и сумм
+
+Каждый выбор модели → бот спрашивает сумму → пишет в столбец этой модели.
+
+Кнопка Add model повторяет шаги выбора модели/суммы, заполняя новые поля.
+
+Total sales = сумма по всем модельным столбцам в строке (можно посчитать в боте при сохранении или формулой в шите; ниже — расчёт в боте).
+
+Net sales и Total made — вычисляются в боте из коэффициентов.
+
+7) Автоинкремент ID
+
+Простой вариант (достаточен при низкой конкуренции):
+
+Прочитать последний непустой ID в листе.
+
+ID = last_id + 1.
+
+Записать строку.
+
+Надёжный вариант (много одновременных вставок):
+
+Завести техлист Meta с ячейкой A1=last_id.
+
+Сделать небольшой Google Apps Script Web App, который под LockService увеличивает A1 и возвращает новое значение. Бот перед записью запрашивает ID у этого веб‑приложения.
+
+8) Вывод сводки после сохранения
+
+Формат сообщения:
+
+1) ID смены: <ID>
+2) Дата формирования смены: <Date>
+3) Username: <EmployeeName>
+4) Clock in: <Clock in>
+5) Clock out: <Clock out>
+6) Model(s):
+   - <Model A>: <сумма>
+   - <Model B>: <сумма>
+   ...
+7) Total sales: <число>
+8) Net sales: <число>
+9) Made during this shift: <число>
+
+9) Валидации и UX‑мелочи
+
+Суммы — парсим как десятичные (допускать . и ,), округляем до 2 знаков.
+
+«Назад» работает на каждом шаге; хранить стек состояний (user_data['stack']).
+
+Если у пользователя нет username — подставляем first_name (и пишем это в EmployeeName).
+
+Все записи в Google Sheets делаются единообразно в требуемом формате даты/времени.
+
+10) Скелет кода (Python, python-telegram-bot, gspread)
+
+Это компактный, но рабочий каркас. В нём показана логика состояний, клавиатур и запись в Шит. Вам останется вставить токены/ID, при необходимости — обвязать Redis‑storage и довести обработку ошибок.
+
+requirements.txt
+
+python-telegram-bot==21.0
+gspread==6.1.2
+google-auth==2.32.0
+python-dotenv==1.0.1
+pytz==2024.1
+
+
+bot.py
+
+import os
+import decimal
+from datetime import datetime, timedelta, timezone
+from functools import partial
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from telegram import (
+    Update, InlineKeyboardMarkup, InlineKeyboardButton
+)
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
+)
+
+import gspread
+import pytz
+
+# ========= CONFIG =========
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+SHEET_NAME = os.getenv("SHEET_NAME", "Shifts")
+PRODUCTS = [p.strip() for p in os.getenv("PRODUCTS", "Model A,Model B,Model C").split(",") if p.strip()]
+
+COMMISSION_RATE = float(os.getenv("COMMISSION_RATE", "0.20"))
+PAYOUT_RATE = float(os.getenv("PAYOUT_RATE", "1.00"))
+
+USE_FIXED_UTC_MINUS_5 = os.getenv("USE_FIXED_UTC_MINUS_5", "false").lower() == "true"
+ET_TZ = pytz.FixedOffset(-300) if USE_FIXED_UTC_MINUS_5 else pytz.timezone("America/New_York")
+DATE_FMT = "%Y/%m/%d %H/%M/%S"  # ВНИМАНИЕ: слэши в дате и во времени
+
+# ========= STATES =========
+(
+    START,
+    CHOOSE_DATE_IN,
+    CHOOSE_TIME_IN,
+    CHOOSE_TIME_OUT,
+    PICK_PRODUCT,
+    ENTER_AMOUNT,
+    ADD_OR_FINISH,
+    CONFIRM_SUMMARY,
+    EDIT_MENU,
+    EDIT_PICK_SHIFT,
+    EDIT_FIELD,
+    EDIT_TIME_IN,
+    EDIT_TIME_OUT,
+    EDIT_TOTAL_SALES,
+) = range(14)
+
+# ========= GOOGLE SHEETS =========
+def gs_client():
+    return gspread.service_account(filename=os.getenv("GOOGLE_SA_JSON"))
+
+def gs_sheet():
+    return gs_client().open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+
+def ensure_headers_and_products():
+    ws = gs_sheet()
+    headers = ws.row_values(1)
+    base_headers = ["ID","Date","EmployeeId","EmployeeName","Clock in","Clock out"]
+    tail_headers = ["Total sales","Net sales","Total made"]
+    need = base_headers + PRODUCTS + tail_headers
+    if headers != need:
+        if not headers:
+            ws.update("A1", [need])
+        else:
+            # расширяем/синхронизируем заголовки
+            current_set = set(headers)
+            for i, name in enumerate(need, start=1):
+                if i > len(headers) or headers[i-1] != name:
+                    ws.update_cell(1, i, name)
+
+def next_id(ws):
+    # Простой автоинкремент: читаем последний ID в столбце A
+    col = ws.col_values(1)
+    if len(col) <= 1:
+        return 1
+    last = col[-1].strip()
+    try:
+        return int(last) + 1
+    except:
+        # если пусто/текст — ищем снизу вверх
+        for v in reversed(col[1:]):
+            try:
+                return int(v.strip()) + 1
+            except:
+                continue
+    return 1
+
+# ========= TIME HELPERS =========
+def now_et():
+    return datetime.now(tz=ET_TZ)
+
+def format_dt(dt: datetime):
+    return dt.strftime(DATE_FMT)
+
+AM_TIMES = [f"{h if h else 12} AM" for h in range(0, 12)]
+PM_TIMES = [f"{12 if h==12 else h-12} PM" for h in range(12, 24)]
+
+def hour_from_label(label: str) -> int:
+    # "12 AM"->0, "1 AM"->1, ..., "12 PM"->12, "1 PM"->13, ...
+    parts = label.split()
+    h = int(parts[0])
+    ampm = parts[1].upper()
+    if ampm == "AM":
+        return 0 if h == 12 else h
+    else:
+        return 12 if h == 12 else h + 12
+
+def time_keyboard(kind: str, daypart: str):
+    # kind: "IN" | "OUT"
+    labels = AM_TIMES if daypart == "AM" else PM_TIMES
+    btns = []
+    for row in range(3):
+        row_btns = []
+        for col in range(4):
+            label = labels[row*4+col]
+            row_btns.append(
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"T:{kind}:{label.replace(' ','_')}"
+                )
+            )
+        btns.append(row_btns)
+    # 13-я кнопка — переключение
+    other = "PM" if daypart == "AM" else "AM"
+    btns.append([InlineKeyboardButton(
+        text=f"→ {other}",
+        callback_data=f"SWITCH:{kind}:{other}"
+    )])
+    # Кнопка Назад
+    btns.append([InlineKeyboardButton("⬅️ Back", callback_data="BACK")])
+    return InlineKeyboardMarkup(btns)
+
+def date_choice_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Server date - 1", callback_data="DATE:-1")],
+        [InlineKeyboardButton("Server date",     callback_data="DATE:0")],
+        [InlineKeyboardButton("⬅️ Back",        callback_data="BACK")],
+    ])
+
+def products_keyboard():
+    rows = []
+    row = []
+    for i, p in enumerate(PRODUCTS, start=1):
+        row.append(InlineKeyboardButton(p, callback_data=f"PROD:{p}"))
+        if i % 3 == 0:
+            rows.append(row); row = []
+    if row: rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="BACK")])
+    return InlineKeyboardMarkup(rows)
+
+def add_or_finish_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Add model", callback_data="ADD_MODEL")],
+        [InlineKeyboardButton("Finish shift", callback_data="FINISH")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="BACK")],
+    ])
+
+def edit_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Редактировать смену", callback_data="EDIT")],
+    ])
+
+def edit_fields_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Clock in", callback_data="E_FIELD:IN")],
+        [InlineKeyboardButton("Clock out", callback_data="E_FIELD:OUT")],
+        [InlineKeyboardButton("Total sales", callback_data="E_FIELD:TOTAL")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="BACK")],
+    ])
+
+# ========= UTIL =========
+def push_state(ctx: ContextTypes.DEFAULT_TYPE, state):
+    stack = ctx.user_data.setdefault("stack", [])
+    stack.append(state)
+
+def pop_state(ctx: ContextTypes.DEFAULT_TYPE):
+    stack = ctx.user_data.get("stack", [])
+    if stack:
+        stack.pop()
+
+def reset_flow(ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear()
+
+def to_money(text: str) -> decimal.Decimal:
+    text = text.replace(" ", "").replace(",", ".")
+    return decimal.Decimal(text)
+
+def build_summary(data: dict) -> str:
+    lines = []
+    lines.append(f"1) ID смены: {data.get('id','?')}")
+    lines.append(f"2) Дата формирования смены: {data.get('date','?')}")
+    lines.append(f"3) Username: {data.get('employee_name','?')}")
+    lines.append(f"4) Clock in: {data.get('clock_in','?')}")
+    lines.append(f"5) Clock out: {data.get('clock_out','?')}")
+    lines.append("6) Model(s):")
+    for p in PRODUCTS:
+        val = data.get('products', {}).get(p)
+        if val is not None:
+            lines.append(f"   - {p}: {val}")
+    lines.append(f"7) Total sales: {data.get('total_sales','0.00')}")
+    lines.append(f"8) Net sales: {data.get('net_sales','0.00')}")
+    lines.append(f"9) Made during this shift: {data.get('total_made','0.00')}")
+    return "\n".join(lines)
+
+# ========= HANDLERS =========
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_flow(context)
+    user = update.effective_user
+    context.user_data["employee_id"] = user.id
+    context.user_data["employee_name"] = user.username or user.full_name
+    context.user_data["products"] = {}
+    context.user_data["time_daypart_in"] = "AM"
+    context.user_data["time_daypart_out"] = "AM"
+
+    ensure_headers_and_products()
+
+    push_state(context, START)
+    await update.message.reply_text(
+        "Добро пожаловать! Начинаем формирование смены.",
+        reply_markup=edit_menu_keyboard()
+    )
+    return CHOOSE_DATE_IN
+
+async def on_edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Покажем 3 последние смены по EmployeeId
+    ws = gs_sheet()
+    rows = ws.get_all_records()
+    emp_id = context.user_data.get("employee_id")
+    # Отфильтровать и отсортировать по 'Date' (в формате YYYY/MM/DD HH/MM/SS)
+    mine = [r for r in rows if str(r.get("EmployeeId")) == str(emp_id)]
+    def parse_dt(s): 
+        try: return datetime.strptime(s, DATE_FMT)
+        except: return datetime.min
+    mine.sort(key=lambda r: parse_dt(r.get("Date","")), reverse=True)
+    last3 = mine[:3]
+    if not last3:
+        await update.callback_query.message.reply_text("У вас нет последних смен для редактирования.")
+        return CHOOSE_DATE_IN
+    kb = []
+    for r in last3:
+        kb.append([InlineKeyboardButton(
+            text=f"ID {r['ID']} • {r['Date']}",
+            callback_data=f"E_PICK:{r['ID']}"
+        )])
+    kb.append([InlineKeyboardButton("⬅️ Back", callback_data="BACK")])
+    await update.callback_query.message.reply_text("Выберите смену для редактирования:", reply_markup=InlineKeyboardMarkup(kb))
+    return EDIT_PICK_SHIFT
+
+async def choose_date_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Первый экран после /start — выбор даты для Clock in
+    push_state(context, CHOOSE_DATE_IN)
+    if update.message:
+        await update.message.reply_text("Выберите дату начала смены:", reply_markup=date_choice_keyboard())
+    else:
+        await update.callback_query.message.reply_text("Выберите дату начала смены:", reply_markup=date_choice_keyboard())
+    return CHOOSE_DATE_IN
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    data = q.data
+
+    # Назад
+    if data == "BACK":
+        pop_state(context)
+        prev = (context.user_data.get("stack") or [START])[-1]
+        if prev == START:
+            await q.message.reply_text("Возврат к старту. Выберите дату начала:", reply_markup=date_choice_keyboard())
+            return CHOOSE_DATE_IN
+        if prev == CHOOSE_DATE_IN:
+            await q.message.reply_text("Выберите дату начала смены:", reply_markup=date_choice_keyboard())
+            return CHOOSE_DATE_IN
+        if prev == CHOOSE_TIME_IN:
+            dp = context.user_data.get("time_daypart_in","AM")
+            await q.message.reply_text("Выберите время начала (Clock in):", reply_markup=time_keyboard("IN", dp))
+            return CHOOSE_TIME_IN
+        if prev == CHOOSE_TIME_OUT:
+            dp = context.user_data.get("time_daypart_out","AM")
+            await q.message.reply_text("Выберите время окончания (Clock out):", reply_markup=time_keyboard("OUT", dp))
+            return CHOOSE_TIME_OUT
+        if prev == PICK_PRODUCT:
+            await q.message.reply_text("Выберите продукт:", reply_markup=products_keyboard())
+            return PICK_PRODUCT
+        if prev == ADD_OR_FINISH:
+            await q.message.reply_text("Добавить ещё модель или завершить?", reply_markup=add_or_finish_keyboard())
+            return ADD_OR_FINISH
+        return CHOOSE_DATE_IN
+
+    # Ветвь редактирования — вход
+    if data == "EDIT":
+        return await on_edit_button(update, context)
+
+    if data.startswith("E_PICK:"):
+        edit_id = int(data.split(":")[1])
+        context.user_data["edit_id"] = edit_id
+        await q.message.reply_text(f"Редактирование смены ID {edit_id}: выберите поле:", reply_markup=edit_fields_keyboard())
+        return EDIT_FIELD
+
+    if data.startswith("E_FIELD:"):
+        fld = data.split(":")[1]  # IN | OUT | TOTAL
+        context.user_data["edit_field"] = fld
+        # Особое правило для дат: использовать дату из поля Date записи
+        if fld in ("IN","OUT"):
+            kind = "IN" if fld=="IN" else "OUT"
+            key_dp = "time_daypart_in" if kind=="IN" else "time_daypart_out"
+            context.user_data[key_dp] = "AM"
+            await q.message.reply_text(f"Выберите время для {'Clock in' if kind=='IN' else 'Clock out'}:", 
+                                       reply_markup=time_keyboard(kind, "AM"))
+            return EDIT_TIME_IN if kind=="IN" else EDIT_TIME_OUT
+        else:
+            await q.message.reply_text("Введите новое значение Total sales числом (например, 123.45):")
+            return EDIT_TOTAL_SALES
+
+    # Выбор даты Clock in
+    if data.startswith("DATE:"):
+        push_state(context, CHOOSE_TIME_IN)
+        day_offset = int(data.split(":")[1])  # -1 или 0
+        base = now_et().date() + timedelta(days=day_offset)
+        context.user_data["clock_in_date"] = base  # только дата
+        await q.message.reply_text("Выберите время начала (Clock in):", reply_markup=time_keyboard("IN","AM"))
+        context.user_data["time_daypart_in"] = "AM"
+        return CHOOSE_TIME_IN
+
+    # Переключение AM/PM
+    if data.startswith("SWITCH:"):
+        _, kind, to = data.split(":")
+        if kind == "IN":
+            context.user_data["time_daypart_in"] = to
+            await q.message.edit_reply_markup(reply_markup=time_keyboard("IN", to))
+            return CHOOSE_TIME_IN
+        else:
+            context.user_data["time_daypart_out"] = to
+            await q.message.edit_reply_markup(reply_markup=time_keyboard("OUT", to))
+            return CHOOSE_TIME_OUT
+
+    # Выбор времени (IN/OUT)
+    if data.startswith("T:"):
+        _, kind, label = data.split(":")
+        label = label.replace("_"," ")
+        hour = hour_from_label(label)
+        # минуты/секунды = 00
+        if kind == "IN":
+            date_part = context.user_data["clock_in_date"]
+            dt = datetime(date_part.year, date_part.month, date_part.day, hour, 0, 0, tzinfo=ET_TZ)
+            context.user_data["clock_in"] = format_dt(dt)
+            # Далее — выбор времени окончания
+            push_state(context, CHOOSE_TIME_OUT)
+            # дата для clock out — ТЕКУЩАЯ серверная дата
+            context.user_data["clock_out_date"] = now_et().date()
+            context.user_data["time_daypart_out"] = "AM"
+            await q.message.reply_text("Выберите время окончания (Clock out):", reply_markup=time_keyboard("OUT","AM"))
+            return CHOOSE_TIME_OUT
+        else:
+            date_part = context.user_data["clock_out_date"]
+            dt = datetime(date_part.year, date_part.month, date_part.day, hour, 0, 0, tzinfo=ET_TZ)
+            context.user_data["clock_out"] = format_dt(dt)
+            # Далее — выбор продукта
+            push_state(context, PICK_PRODUCT)
+            await q.message.reply_text("Выберите продукт:", reply_markup=products_keyboard())
+            return PICK_PRODUCT
+
+    # Выбор продукта
+    if data.startswith("PROD:"):
+        prod = data.split(":",1)[1]
+        context.user_data["current_product"] = prod
+        await q.message.reply_text(f"Введите сумму для «{prod}» (например, 99.90):")
+        return ENTER_AMOUNT
+
+    # Добавить ещё или завершить
+    if data == "ADD_MODEL":
+        push_state(context, PICK_PRODUCT)
+        await q.message.reply_text("Выберите продукт:", reply_markup=products_keyboard())
+        return PICK_PRODUCT
+
+    if data == "FINISH":
+        # Рассчитать итоги и сохранить
+        ws = gs_sheet()
+        new_id = next_id(ws)
+        now_str = format_dt(now_et())
+        emp_id = context.user_data["employee_id"]
+        emp_name = context.user_data["employee_name"]
+        clock_in = context.user_data.get("clock_in")
+        clock_out = context.user_data.get("clock_out")
+        products = context.user_data.get("products", {})
+
+        total_sales = sum(decimal.Decimal(str(v)) for v in products.values()) if products else decimal.Decimal("0")
+        net_sales = total_sales * decimal.Decimal(str(1 - COMMISSION_RATE))
+        total_made = net_sales * decimal.Decimal(str(PAYOUT_RATE))
+
+        # Сформировать строку для записи
+        row = []
+        headers = ws.row_values(1)
+        values_map = {
+            "ID": new_id,
+            "Date": now_str,
+            "EmployeeId": emp_id,
+            "EmployeeName": emp_name,
+            "Clock in": clock_in,
+            "Clock out": clock_out,
+            "Total sales": f"{total_sales:.2f}",
+            "Net sales": f"{net_sales:.2f}",
+            "Total made": f"{total_made:.2f}",
+        }
+        # Продукты
+        for p in PRODUCTS:
+            if p in products:
+                values_map[p] = f"{decimal.Decimal(str(products[p])):.2f}"
+
+        for h in headers:
+            row.append(values_map.get(h, ""))
+
+        ws.append_row(row, value_input_option="RAW")
+
+        summary = {
+            "id": new_id,
+            "date": now_str,
+            "employee_name": emp_name,
+            "clock_in": clock_in,
+            "clock_out": clock_out,
+            "products": products,
+            "total_sales": f"{total_sales:.2f}",
+            "net_sales": f"{net_sales:.2f}",
+            "total_made": f"{total_made:.2f}",
+        }
+        await q.message.reply_text("Смена сохранена:\n\n" + build_summary(summary))
+        reset_flow(context)
+        return ConversationHandler.END
+
+    return CHOOSE_DATE_IN
+
+async def amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    try:
+        value = to_money(text)
+        if value < 0:
+            raise ValueError
+    except:
+        await update.message.reply_text("Введите корректную неотрицательную сумму, например: 123.45")
+        return ENTER_AMOUNT
+
+    prod = context.user_data.get("current_product")
+    context.user_data.setdefault("products", {})[prod] = value
+    push_state(context, ADD_OR_FINISH)
+    await update.message.reply_text(
+        f"Добавлено: {prod} = {value:.2f}\nДобавить ещё модель или завершить?",
+        reply_markup=add_or_finish_keyboard()
+    )
+    return ADD_OR_FINISH
+
+# ====== Редактирование ======
+def find_row_by_id(ws, target_id: int):
+    ids = ws.col_values(1)[1:]  # без заголовка
+    for idx, v in enumerate(ids, start=2):
+        try:
+            if int(v) == target_id:
+                return idx
+        except:
+            continue
+    return None
+
+async def edit_total_sales_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    try:
+        val = to_money(text)
+        if val < 0:
+            raise ValueError
+    except:
+        await update.message.reply_text("Введите корректную сумму (например, 200.00):")
+        return EDIT_TOTAL_SALES
+
+    ws = gs_sheet()
+    row_id = context.user_data.get("edit_id")
+    row_idx = find_row_by_id(ws, row_id)
+    if not row_idx:
+        await update.message.reply_text("Не удалось найти запись. Попробуйте снова.")
+        return ConversationHandler.END
+
+    # Обновим Total sales + пересчёт Net/Total made
+    headers = ws.row_values(1)
+    row_vals = ws.row_values(row_idx)
+    row_map = {h: (row_vals[i] if i < len(row_vals) else "") for i, h in enumerate(headers)}
+
+    total_sales = decimal.Decimal(f"{val:.2f}")
+    net_sales = total_sales * decimal.Decimal(str(1 - COMMISSION_RATE))
+    total_made = net_sales * decimal.Decimal(str(PAYOUT_RATE))
+
+    def set_cell(col_name, value):
+        col_idx = headers.index(col_name) + 1
+        ws.update_cell(row_idx, col_idx, value)
+
+    set_cell("Total sales", f"{total_sales:.2f}")
+    set_cell("Net sales", f"{net_sales:.2f}")
+    set_cell("Total made", f"{total_made:.2f}")
+
+    await update.message.reply_text(f"Обновлено. Total sales = {total_sales:.2f}, Net = {net_sales:.2f}, Made = {total_made:.2f}")
+    return ConversationHandler.END
+
+async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Роутинг текстов в состояниях редактирования
+    state = context.user_data.get("state_override")
+    # В этом каркасе не используется; оставлено для расширения
+    pass
+
+# ========= ENTRY =========
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CHOOSE_DATE_IN: [
+                CallbackQueryHandler(on_edit_button, pattern="^EDIT$"),
+                CallbackQueryHandler(handle_callback),
+            ],
+            CHOOSE_TIME_IN: [CallbackQueryHandler(handle_callback)],
+            CHOOSE_TIME_OUT: [CallbackQueryHandler(handle_callback)],
+            PICK_PRODUCT: [CallbackQueryHandler(handle_callback)],
+            ENTER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, amount_input),
+                           CallbackQueryHandler(handle_callback)],
+            ADD_OR_FINISH: [CallbackQueryHandler(handle_callback)],
+            EDIT_PICK_SHIFT: [CallbackQueryHandler(handle_callback)],
+            EDIT_FIELD: [CallbackQueryHandler(handle_callback)],
+            EDIT_TIME_IN: [CallbackQueryHandler(handle_callback)],
+            EDIT_TIME_OUT: [CallbackQueryHandler(handle_callback)],
+            EDIT_TOTAL_SALES: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_total_sales_input)],
+        },
+        fallbacks=[CallbackQueryHandler(handle_callback)],
+        allow_reentry=True,
+    )
+
+    app.add_handler(conv)
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
+
+11) Что осталось подстроить под вас
+
+Список продуктов (PRODUCTS) и добавление соответствующих столбцов в таблице (бот делает это автоматически по именам).
+
+Комиссия/алгоритм выплат (COMMISSION_RATE, PAYOUT_RATE) — при необходимости измените логику.
+
+Фиксированное UTC‑5 (если строго требуется) — установите USE_FIXED_UTC_MINUS_5=true.
+
+Устойчивый ID при высокой нагрузке. Если есть риск параллельных записей, рекомендую:
+
+Создать Apps Script для «атомарного» инкремента счётчика в листе Meta с LockService.
+
+Бот перед сохранением делает HTTP‑запрос к этому скрипту → получает следующий ID → сохраняет строку.
+
+Редактирование Clock in/Clock out. В каркасе показан выбор времени; добавьте в EDIT_TIME_IN/OUT аналог дат для Clock in с учётом правила «брать дату из поля Date записи» (это 1–2 обработчика по аналогии с шагами создания).
