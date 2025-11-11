@@ -13,10 +13,17 @@ class Config:
     # Telegram Bot
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
-    # Google Sheets
+    # Google Sheets (for migration/backup only)
     GOOGLE_SA_JSON: str = os.getenv("GOOGLE_SA_JSON", "google_sheets_credentials.json")
     SPREADSHEET_ID: str = os.getenv("SPREADSHEET_ID", "")
     SHEET_NAME: str = os.getenv("SHEET_NAME", "Shifts")
+
+    # PostgreSQL Database
+    POSTGRES_HOST: str = os.getenv("DB_HOST", "localhost")
+    POSTGRES_PORT: int = int(os.getenv("DB_PORT", "5432"))
+    POSTGRES_DB: str = os.getenv("DB_NAME", "alex12060")
+    POSTGRES_USER: str = os.getenv("DB_USER", "lexun")
+    POSTGRES_PASSWORD: str = os.getenv("DB_PASSWORD", "")
 
     # Products
     PRODUCTS: List[str] = [
@@ -42,7 +49,8 @@ class Config:
         """
         required = {
             "BOT_TOKEN": cls.BOT_TOKEN,
-            "SPREADSHEET_ID": cls.SPREADSHEET_ID,
+            "POSTGRES_DB": cls.POSTGRES_DB,
+            "POSTGRES_USER": cls.POSTGRES_USER,
         }
 
         missing = [name for name, value in required.items() if not value]
@@ -53,8 +61,20 @@ class Config:
         if not cls.PRODUCTS:
             raise ValueError("PRODUCTS must contain at least one product")
 
-        if not os.path.exists(cls.GOOGLE_SA_JSON):
-            raise ValueError(f"Google credentials file not found: {cls.GOOGLE_SA_JSON}")
+    @classmethod
+    def get_db_params(cls) -> dict:
+        """Get PostgreSQL connection parameters.
+
+        Returns:
+            Dict with connection parameters for psycopg2
+        """
+        return {
+            "host": cls.POSTGRES_HOST,
+            "port": cls.POSTGRES_PORT,
+            "database": cls.POSTGRES_DB,
+            "user": cls.POSTGRES_USER,
+            "password": cls.POSTGRES_PASSWORD,
+        }
 
 
 # FSM States

@@ -467,6 +467,10 @@ async def start_create_shift(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     logger.info(f"[CREATE] User {user.id} started shift creation")
 
+    # Initialize products dictionary if not exists
+    if "products" not in context.user_data:
+        context.user_data["products"] = {}
+
     push_state(context, CHOOSE_DATE_IN)
 
     sent_msg = await query.message.reply_text(
@@ -703,6 +707,11 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ENTER_AMOUNT
 
     product = context.user_data["current_product"]
+
+    # Ensure products dict exists
+    if "products" not in context.user_data:
+        context.user_data["products"] = {}
+
     context.user_data["products"][product] = amount
 
     logger.info(f"[AMOUNT] User {user.id} entered amount for {product}: {amount}")
