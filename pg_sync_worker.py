@@ -248,7 +248,7 @@ class PostgresSyncWorker:
             # For INSERT/UPDATE, get the full data from PostgreSQL
             with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT id, employee_id, type, value, applied, shift_id, created_at
+                    SELECT id, employee_id, bonus_type, value, applied, shift_id, created_at
                     FROM active_bonuses
                     WHERE id = %s
                 """, (record_id,))
@@ -262,7 +262,7 @@ class PostgresSyncWorker:
             row_data = [
                 bonus['id'],
                 bonus['employee_id'],
-                bonus['type'],
+                bonus['bonus_type'],
                 float(bonus['value']) if bonus['value'] else 0,
                 'TRUE' if bonus['applied'] else 'FALSE',
                 bonus['shift_id'] if bonus['shift_id'] else '',
