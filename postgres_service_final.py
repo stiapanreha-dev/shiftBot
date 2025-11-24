@@ -158,7 +158,9 @@ class PostgresService:
             total_per_hour = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
 
             # Calculate dynamic commission rate
-            dynamic_rate = Decimal(str(self.calculate_dynamic_rate(employee_id, shift_date, float(total_sales))))
+            # Convert shift_date format from YYYY/MM/DD to YYYY-MM-DD for calculate_dynamic_rate
+            shift_date_normalized = shift_date.replace("/", "-")
+            dynamic_rate = Decimal(str(self.calculate_dynamic_rate(employee_id, shift_date_normalized, float(total_sales))))
 
             # Start with base + dynamic commission
             commission_pct = base_commission + dynamic_rate
