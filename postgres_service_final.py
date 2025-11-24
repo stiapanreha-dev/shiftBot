@@ -722,7 +722,7 @@ class PostgresService:
             """, (employee_id, month_start, month_end))
 
             monthly_total = cursor.fetchone()['total']
-            total_with_current = monthly_total + current_total_sales
+            total_with_current = monthly_total + Decimal(str(current_total_sales))
 
             # Use database function to get dynamic rate
             cursor.execute("SELECT get_dynamic_rate(%s) as rate", (total_with_current,))
