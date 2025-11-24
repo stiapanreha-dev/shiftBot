@@ -219,10 +219,10 @@ class PostgresService:
 
             shift_id = cursor.fetchone()['id']
 
-            # Mark applied bonuses as used
+            # Mark applied bonuses as used (pass cursor to use same transaction)
             for bonus_id in applied_bonus_ids:
                 if bonus_id:
-                    self.apply_bonus(bonus_id, shift_id)
+                    self.apply_bonus(bonus_id, shift_id, cursor=cursor)
                     logger.info(f"Marked bonus {bonus_id} as applied to shift {shift_id}")
 
             # Insert products (already extracted above)
@@ -1142,15 +1142,19 @@ class PostgresService:
             cursor.close()
             conn.close()
 
-    def apply_bonus(self, bonus_id: int, shift_id: int) -> None:
+    def apply_bonus(self, bonus_id: int, shift_id: int, cursor=None) -> None:
         """Apply a bonus to a shift.
 
         Args:
             bonus_id: Bonus ID
             shift_id: Shift ID
+            cursor: Optional cursor to use (for transaction reuse)
         """
-        conn = self._get_conn()
-        cursor = conn.cursor()
+        # Use provided cursor or create new connection
+        own_connection = cursor is None
+        if own_connection:
+            conn = self._get_conn()
+            cursor = conn.cursor()
 
         try:
             cursor.execute("""
@@ -1161,7 +1165,10 @@ class PostgresService:
                 WHERE id = %s
             """, (shift_id, bonus_id))
 
-            conn.commit()
+            # Only commit if we created our own connection
+            if own_connection:
+                conn.commit()
+
             logger.info(f"✓ Applied bonus {bonus_id} to shift {shift_id}")
 
             # Invalidate cache
@@ -1169,12 +1176,15 @@ class PostgresService:
                 self.cache_manager.invalidate_key('shift_bonuses', shift_id)
 
         except Exception as e:
-            conn.rollback()
+            if own_connection:
+                conn.rollback()
             logger.error(f"Failed to apply bonus: {e}")
             raise
         finally:
-            cursor.close()
-            conn.close()
+            # Only close if we created our own connection
+            if own_connection:
+                cursor.close()
+                conn.close()
 
     def get_shift_applied_bonuses(self, shift_id: int) -> List[Dict]:
         """Get bonuses applied to a shift in SheetsService format.
