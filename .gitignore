@@ -15,6 +15,7 @@ build/
 credentials.json
 config_local.py
 .env
+CLAUDE.md
 
 # Logs directory
 logs/
