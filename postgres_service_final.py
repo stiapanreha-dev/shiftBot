@@ -867,8 +867,11 @@ class PostgresService:
             existing = cursor.fetchone()
             previous_rank_id = existing['current_rank_id'] if existing else None
 
+            # Check if rank changed
+            rank_changed = existing and existing['current_rank_id'] != rank_id
+
             # Upsert employee rank with previous_rank_id tracking
-            # Note: notified is only set on INSERT, preserved on UPDATE
+            # Note: notified is reset to FALSE on rank change, preserved otherwise
             cursor.execute("""
                 INSERT INTO employee_ranks (employee_id, year, month, current_rank_id, previous_rank_id, total_sales, notified)
                 VALUES (%s, %s, %s, %s, %s, %s, FALSE)
@@ -876,8 +879,11 @@ class PostgresService:
                 SET previous_rank_id = COALESCE(employee_ranks.current_rank_id, EXCLUDED.previous_rank_id),
                     current_rank_id = EXCLUDED.current_rank_id,
                     total_sales = EXCLUDED.total_sales,
+                    notified = CASE
+                        WHEN employee_ranks.current_rank_id != EXCLUDED.current_rank_id THEN FALSE
+                        ELSE employee_ranks.notified
+                    END,
                     updated_at = now()
-                    -- notified is NOT updated here - preserved from existing record
             """, (employee_id, year, month, rank_id, previous_rank_id, total_sales))
 
             conn.commit()

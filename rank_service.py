@@ -54,12 +54,15 @@ class RankService:
             current_record = self.sheets.get_employee_rank(employee_id, year, month)
 
             if current_record:
-                # Use Previous Rank if available, otherwise fall back to Current Rank
-                old_rank = current_record.get("Previous Rank") or current_record.get("Current Rank", "Rookie")
+                # Get current rank for comparison
+                current_rank = current_record.get("Current Rank", "Rookie")
+                previous_rank = current_record.get("Previous Rank")
                 notified = str(current_record.get("Notified", "false")).lower() == "true"
 
-                # Check if rank changed
-                if old_rank != new_rank:
+                # Check if rank changed (compare current_rank with new calculated rank)
+                if current_rank != new_rank:
+                    # Use previous_rank for notification message (to show what user upgraded FROM)
+                    old_rank = previous_rank or current_rank
                     # Rank changed
                     is_rank_up = self._is_rank_up(old_rank, new_rank)
 
@@ -80,8 +83,9 @@ class RankService:
                     # Get emoji
                     emoji = self._get_rank_emoji(new_rank)
 
-                    logger.info(f"Rank changed for employee {employee_id}: {old_rank} → {new_rank}")
+                    logger.info(f"Rank changed for employee {employee_id}: {current_rank} → {new_rank}")
 
+                    # Return notification (update_employee_rank already reset notified=FALSE)
                     return {
                         "changed": True,
                         "old_rank": old_rank,
