@@ -738,6 +738,8 @@ class PostgresService:
                     'max_total_sales': float(rank['max_amount']),
                     'Description': rank['text'] or '',
                     'description': rank['text'] or '',
+                    'Emoji': rank.get('emoji') or '',
+                    'emoji': rank.get('emoji') or '',
                     'Bonuses': ','.join(bonus_codes),  # Comma-separated bonus codes
                 })
 
@@ -803,18 +805,21 @@ class PostgresService:
     def update_employee_rank(
         self,
         employee_id: int,
+        new_rank: str,
         year: int,
         month: int,
-        rank_name: str
+        last_updated: str = None
     ) -> None:
         """Update employee rank for a month.
 
         Args:
             employee_id: Employee ID
+            new_rank: New rank name
             year: Year
             month: Month (1-12)
-            rank_name: Rank name
+            last_updated: Optional timestamp (not used in PostgreSQL, auto-managed)
         """
+        rank_name = new_rank
         conn = self._get_conn()
         cursor = conn.cursor()
 
@@ -828,16 +833,15 @@ class PostgresService:
                 return
 
             rank_id = rank['id']
-            month_val = f"{year}-{month:02d}"
 
             # Upsert employee rank
             cursor.execute("""
-                INSERT INTO employee_ranks (employee_id, month, current_rank_id)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (employee_id, month) DO UPDATE
+                INSERT INTO employee_ranks (employee_id, year, month, current_rank_id)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (employee_id, year, month) DO UPDATE
                 SET current_rank_id = EXCLUDED.current_rank_id,
                     updated_at = now()
-            """, (employee_id, month_val, rank_id))
+            """, (employee_id, year, month, rank_id))
 
             conn.commit()
             logger.info(f"✓ Updated rank for employee {employee_id} ({year}-{month:02d}): {rank_name}")
@@ -856,7 +860,7 @@ class PostgresService:
             conn.close()
 
     def determine_rank(self, employee_id: int, year: int, month: int) -> str:
-        """Determine employee rank based on monthly performance.
+        """Determine employee rank based on monthly total sales.
 
         Args:
             employee_id: Employee ID
@@ -864,10 +868,43 @@ class PostgresService:
             month: Month (1-12)
 
         Returns:
-            Rank name or empty string
+            Rank name based on total sales
         """
-        rank = self.get_employee_rank(employee_id, year, month)
-        return rank['rank_name'] if rank else ""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Calculate total sales for the month
+            month_val = f"{year}-{month:02d}"
+            cursor.execute("""
+                SELECT COALESCE(SUM(total_sales), 0) as total
+                FROM shifts
+                WHERE employee_id = %s
+                  AND to_char(clock_in, 'YYYY-MM') = %s
+            """, (employee_id, month_val))
+
+            result = cursor.fetchone()
+            total_sales = float(result['total']) if result else 0.0
+
+            # Get ranks and find matching rank
+            cursor.execute("""
+                SELECT name
+                FROM ranks
+                WHERE min_amount <= %s AND max_amount > %s
+                  AND is_active = true
+                ORDER BY min_amount
+                LIMIT 1
+            """, (total_sales, total_sales))
+
+            rank = cursor.fetchone()
+            return rank['name'] if rank else "Rookie"
+
+        except Exception as e:
+            logger.error(f"Failed to determine rank: {e}")
+            return "Rookie"
+        finally:
+            cursor.close()
+            conn.close()
 
     def get_rank_text(self, rank_name: str) -> str:
         """Get rank description text.

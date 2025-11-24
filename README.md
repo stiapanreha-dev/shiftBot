@@ -1,59 +1,70 @@
-# Telegram Shift Tracking Bot
+# Alex12060 Telegram Bot
 
-Telegram-бот для учета рабочих смен сотрудников с автоматической записью данных в Google Sheets.
+Telegram бот для управления рабочими сменами сотрудников салона красоты с интеграцией PostgreSQL.
 
 ## 📁 Структура проекта
 
 ```
 Alex12060/
-├── bot.py                    # Точка входа приложения
-├── config.py                 # Конфигурация из .env
-├── handlers.py               # Обработчики команд и состояний
-├── keyboards.py              # Inline клавиатуры
-├── sheets_service.py         # Google Sheets API
-├── rank_service.py           # Система рангов и бонусов
-├── time_utils.py             # Утилиты для работы с датами/временем
+├── bot.py                          # Main entry point
+├── config.py                       # Configuration
+├── requirements.txt                # Python dependencies
+├── .env, .env.example              # Environment variables
+├── .gitignore                      # Git ignore rules
 │
-├── docs/                     # 📚 Документация
-│   ├── CLAUDE.md             # Основная документация проекта
-│   ├── TEST_SCENARIOS.md     # Сценарии тестирования
-│   ├── ANALYSIS_AND_PLAN.md  # Анализ и планирование
-│   ├── IMPROVEMENTS_ANALYSIS.md
-│   ├── MIGRATION_SUMMARY.md  # Сводка миграции тестов
-│   ├── README_TESTING.md     # Руководство по тестированию
-│   └── TZ2_ANALYSIS.md       # Анализ ТЗ
+├── src/                            # Core application code
+│   ├── handlers.py                 # Telegram message handlers
+│   ├── keyboards.py                # Inline keyboards
+│   └── time_utils.py               # Time utilities
 │
-├── tests/                    # 🧪 Тесты
-│   ├── integration/          # Интеграционные тесты
-│   │   ├── test_scenario_2_1.py
-│   │   └── test_scenario_2_2.py
-│   ├── unit/                 # Юнит-тесты
-│   ├── utils/                # Утилиты для тестирования
-│   │   ├── delete_shifts.py
-│   │   └── check_today_shifts.py
-│   ├── fixtures/             # Тестовые фикстуры
-│   ├── README.md             # Документация тестов
-│   └── QUICK_START.md        # Быстрый старт
+├── services/                       # Data services layer
+│   ├── postgres_service.py         # PostgreSQL service (production)
+│   ├── rank_service.py             # Rank calculation service
+│   ├── cache_manager.py            # In-memory caching (v1.1.0)
+│   └── singleton.py                # Singleton service instances
 │
-├── scripts/                  # 📜 Вспомогательные скрипты
-│   └── dev/                  # Скрипты для разработки
-│       ├── add_test_data.py
-│       ├── check_sheets.py
-│       ├── demo_rank_bonus.py
-│       ├── init_sheets.py
-│       ├── populate_employee_ranks.py
-│       ├── test_calculations.py
-│       ├── test_complex_bonuses.py
-│       ├── test_percent_prev_scenario.py
-│       └── verify_percent_prev.py
+├── database/                       # Database schemas & migrations
+│   ├── pg_schema.py                # PostgreSQL schema definitions
+│   └── migrations/                 # Migration scripts
+│       ├── migrate_to_postgres.py
+│       ├── import_shifts_simple.py
+│       ├── import_ranks_from_sheets.py
+│       └── populate_ranks.py
 │
-├── run_tests.sh              # Скрипт запуска тестов
-├── requirements.txt          # Python зависимости
-├── .env                      # Переменные окружения (не в git)
-└── google_sheets_credentials.json  # Google API credentials (не в git)
+├── experimental/                   # Experimental features
+│   ├── sheets_service.py           # Google Sheets (legacy)
+│   ├── hybrid_service.py           # Hybrid Sheets+PostgreSQL
+│   ├── sync_manager.py             # Bidirectional sync
+│   └── sync_worker.py              # Sync worker daemon
+│
+├── tests/                          # Test suite
+│   ├── test_cache.py
+│   ├── test_commission_breakdown.py
+│   ├── test_postgres_service.py
+│   ├── test_bidirectional_sync.py
+│   ├── integration/                # Integration tests
+│   └── utils/                      # Test utilities
+│
+├── scripts/                        # Utility scripts
+│   ├── dev/                        # Development utilities
+│   └── systemd/                    # Service files
+│       ├── alex12060-bot.service
+│       └── alex12060-sync-worker.service
+│
+├── docs/                           # Documentation
+│   ├── CLAUDE.md                   # Main project guide
+│   ├── README.md                   # Original README
+│   ├── architecture/               # Architecture docs
+│   ├── changelogs/                 # Change history
+│   ├── deployment/                 # Deployment guides
+│   ├── planning/                   # Planning documents
+│   └── specs/                      # Specifications
+│
+├── archive/                        # Deprecated code
+├── logs/                           # Log files (gitignored)
+└── data/                           # Data files
+    └── reference_data.db
 ```
-
----
 
 ## 🚀 Быстрый старт
 
@@ -61,207 +72,102 @@ Alex12060/
 
 ```bash
 python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Настройка
+### 2. Настройка окружения
 
-Создайте файл `.env`:
+Скопируйте `.env.example` в `.env` и заполните:
 
-```env
-BOT_TOKEN=your_bot_token_here
-SPREADSHEET_ID=your_spreadsheet_id
-GOOGLE_SA_JSON=google_sheets_credentials.json
-PRODUCTS=Model A,Model B,Model C
-COMMISSION_RATE=0.20
-PAYOUT_RATE=1.00
-USE_FIXED_UTC_MINUS_5=true
+```bash
+cp .env.example .env
+# Отредактируйте .env с вашими данными
 ```
 
 ### 3. Запуск бота
 
+**Локально (для разработки):**
 ```bash
 python3 bot.py
 ```
 
----
+**На сервере (production):**
+```bash
+# Копировать service файл
+sudo cp scripts/systemd/alex12060-bot.service /etc/systemd/system/
+
+# Включить и запустить
+sudo systemctl enable alex12060-bot
+sudo systemctl start alex12060-bot
+
+# Проверить статус
+sudo systemctl status alex12060-bot
+```
 
 ## 📚 Документация
 
-### Основная документация
-- **[docs/CLAUDE.md](docs/CLAUDE.md)** - Полная документация проекта
-- **[docs/TEST_SCENARIOS.md](docs/TEST_SCENARIOS.md)** - Сценарии тестирования
+- **[docs/CLAUDE.md](docs/CLAUDE.md)** - Полное руководство для разработки
+- **[docs/architecture/](docs/architecture/)** - Архитектурная документация
+- **[docs/changelogs/](docs/changelogs/)** - История изменений
+- **[docs/deployment/](docs/deployment/)** - Руководства по деплою
 
-### Тестирование
-- **[tests/README.md](tests/README.md)** - Документация тестов
-- **[tests/QUICK_START.md](tests/QUICK_START.md)** - Быстрый старт тестирования
-- **[docs/README_TESTING.md](docs/README_TESTING.md)** - Руководство по тестированию
+## 🔧 Основные функции
 
----
+- ✅ Создание и редактирование смен (Clock in/out)
+- ✅ Учет продаж по продуктам
+- ✅ Автоматический расчет комиссии (base + dynamic + bonus)
+- ✅ Система бонусов и рангов
+- ✅ PostgreSQL backend (100-1500x быстрее чем Google Sheets)
+- ✅ In-memory кэширование (v1.1.0)
+
+## 🛠 Технологии
+
+- **Python 3.8+**
+- **python-telegram-bot** - Telegram API
+- **PostgreSQL** - Primary database (production)
+- **SQLAlchemy** - ORM
+- **systemd** - Process management
+
+## 📊 Производительность
+
+| Backend | Latency | API Calls | Scalability |
+|---------|---------|-----------|-------------|
+| PostgreSQL (v3.1) | 10-50ms | 0 | ✅ Excellent |
+| Caching (v1.1) | <1ms | -60% | ✅ Very Good |
+| Google Sheets (legacy) | 1-3s | Many | ⚠️ Limited |
+
+## 🔐 Безопасность
+
+- Sensitive данные в `.env` (не в git)
+- Service запускается от непривилегированного пользователя
+- NoNewPrivileges и PrivateTmp в systemd
+
+## 📝 Логи
+
+Логи находятся в `logs/` (игнорируются git):
+- `logs/bot.log` - основные логи бота
+- `logs/sync_worker.log` - логи sync worker
 
 ## 🧪 Тестирование
 
-### Запустить все тесты:
-
 ```bash
+# Запустить все тесты
 ./run_tests.sh
+
+# Запустить конкретный тест
+python3 -m pytest tests/test_cache.py
 ```
-
-### Запустить конкретный тест:
-
-```bash
-python3 tests/integration/test_scenario_2_1.py
-python3 tests/integration/test_scenario_2_2.py
-```
-
-### Утилиты:
-
-```bash
-# Удалить тестовые смены
-python3 tests/utils/delete_shifts.py 11 12 13
-
-# Проверить смены за сегодня
-python3 tests/utils/check_today_shifts.py
-```
-
-**Подробнее:** [tests/README.md](tests/README.md)
-
----
-
-## 🛠️ Скрипты разработчика
-
-В каталоге `scripts/dev/` находятся вспомогательные скрипты:
-
-```bash
-# Инициализация Google Sheets
-python3 scripts/dev/init_sheets.py
-
-# Проверка данных в Sheets
-python3 scripts/dev/check_sheets.py
-
-# Добавить тестовые данные
-python3 scripts/dev/add_test_data.py
-
-# Демонстрация рангов и бонусов
-python3 scripts/dev/demo_rank_bonus.py
-
-# Тесты расчетов
-python3 scripts/dev/test_calculations.py
-```
-
----
-
-## ⚙️ Основной функционал
-
-### Создание смены
-1. Выбор даты начала (Server date -1 / Server date)
-2. Выбор времени начала (AM/PM клавиатура)
-3. Выбор времени окончания
-4. Выбор продукта(ов) с суммами
-5. Автоматический расчет:
-   - Total sales, Net sales
-   - Динамическая ставка комиссии
-   - Total made (зарплата)
-6. Сохранение в Google Sheets
-
-### Редактирование смены
-- Просмотр 3 последних смен
-- Редактирование времени (Clock in/out)
-- Редактирование Total sales
-- Автоматический пересчет
-
-### Система рангов
-- 6 рангов: Rookie → Hustler → Closer → Shark → King of Greed → Chatting God
-- Автоматическое повышение/понижение на основе продаж
-- Бонусы за достижение рангов
-
-### Статистика
-- Текущий ранг
-- Продажи за месяц
-- Заработок с последнего pay day
-- Следующий pay day
-
----
-
-## 🏗️ Архитектура
-
-### Основные модули
-
-| Модуль | Описание |
-|--------|----------|
-| `bot.py` | Точка входа, ConversationHandler |
-| `handlers.py` | Обработчики команд и состояний FSM |
-| `keyboards.py` | Inline клавиатуры |
-| `sheets_service.py` | Работа с Google Sheets API |
-| `rank_service.py` | Логика рангов и бонусов |
-| `time_utils.py` | Работа с датами/временем (America/New_York) |
-| `config.py` | Конфигурация из .env |
-
-### Состояния FSM
-
-```python
-START → CHOOSE_DATE_IN → CHOOSE_TIME_IN → CHOOSE_TIME_OUT
-     → PICK_PRODUCT → ENTER_AMOUNT → ADD_OR_FINISH → END
-```
-
-**Подробнее:** [docs/CLAUDE.md](docs/CLAUDE.md)
-
----
-
-## 📊 Google Sheets структура
-
-### Лист: Shifts
-
-| Поле | Описание |
-|------|----------|
-| ID | Автоинкремент |
-| Date | Серверное время создания |
-| EmployeeId | Telegram user ID |
-| EmployeeName | Telegram username |
-| Clock in | Время начала смены |
-| Clock out | Время окончания смены |
-| Worked hours/shift | Отработано часов |
-| Model A, B, C... | Продажи по продуктам |
-| Total sales | Сумма всех продаж |
-| Net sales | Total sales × 0.8 |
-| % | Commission % (base + dynamic) |
-| Total per hour | Worked hours × Hourly wage |
-| Commissions | Net sales × % |
-| Total made | Commissions + Total per hour + бонусы |
-
-### Другие листы
-- **EmployeeSettings** - Настройки сотрудников (ставки)
-- **EmployeeRanks** - Текущие ранги
-- **DynamicRates** - Динамические ставки комиссии
-- **RankBonuses** - Бонусы за ранги
-- **ActiveBonuses** - Активные бонусы сотрудников
-
----
-
-## 🔒 Безопасность
-
-- `.env` и `google_sheets_credentials.json` не в git
-- Токены только в переменных окружения
-- Service Account с минимальными правами
-- Валидация всех входных данных
-
----
-
-## 📝 Лицензия
-
-Этот проект создан для Inkar-Dala System.
-
----
 
 ## 📞 Поддержка
 
-При возникновении проблем:
-1. Проверьте `.env` и Google Sheets credentials
-2. Изучите [docs/CLAUDE.md](docs/CLAUDE.md)
-3. Проверьте логи в `bot.log`
+При возникновении проблем см. `docs/CLAUDE.md` раздел "Устранение проблем".
+
+## 📄 Лицензия
+
+Proprietary - Alex12060 Project
 
 ---
 
-**Версия:** 2.0
-**Последнее обновление:** 2025-11-01
+**Последнее обновление:** 2025-11-24
+**Версия:** 3.1.0 (PostgreSQL + Restructured)

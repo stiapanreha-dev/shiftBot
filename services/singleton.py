@@ -15,8 +15,8 @@ Date: 2025-11-11
 """
 
 import logging
-from cache_manager import CacheManager
-from postgres_service_final import PostgresService
+from services.cache_manager import CacheManager
+from services.postgres_service import PostgresService
 
 logger = logging.getLogger(__name__)
 

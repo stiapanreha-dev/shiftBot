@@ -13,13 +13,13 @@ from config import PICK_PRODUCT, ENTER_AMOUNT, ADD_OR_FINISH
 from config import EDIT_MENU, EDIT_PICK_SHIFT, EDIT_FIELD
 from config import EDIT_DATE_IN, EDIT_TIME_IN, EDIT_DATE_OUT, EDIT_TIME_OUT, EDIT_TOTAL_SALES
 
-from time_utils import (
+from src.time_utils import (
     now_et, format_dt, hour_from_label, create_datetime_from_date_and_hour,
     parse_dt, get_server_date
 )
-from services import sheets_service  # Use singleton instance with caching
-from rank_service import RankService
-from keyboards import (
+from services.singleton import sheets_service  # Use singleton instance with caching
+from services.rank_service import RankService
+from src.keyboards import (
     date_choice_keyboard, date_choice_edit_keyboard, time_keyboard,
     products_keyboard, add_or_finish_keyboard, start_menu_keyboard,
     edit_fields_keyboard, shifts_list_keyboard, claim_rank_button
@@ -1313,6 +1313,11 @@ async def handle_edit_total_sales_input(update: Update, context: ContextTypes.DE
                 f"[UPDATED] Shift {shift_id} Total sales updated to {amount} "
                 f"by user {update.effective_user.id}"
             )
+
+            # Check and notify rank changes after updating Total sales
+            user_id = context.user_data.get("employee_id")
+            if user_id:
+                await check_and_notify_rank(user_id, shift_id, context, update.message)
         else:
             logger.warning(f"[EDIT] Failed to update shift {shift_id} - not found")
             await update.message.reply_text(
@@ -1382,8 +1387,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         # Calculate total sales for current month
         from decimal import Decimal
-        ws = sheets.get_worksheet()
-        all_records = ws.get_all_records()
+        all_records = sheets.get_all_shifts()
 
         total_sales_month = Decimal("0")
         for record in all_records:
@@ -1391,12 +1395,15 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 record_date = record.get("Date", "")
                 if record_date:
                     try:
-                        dt = parse_dt(record_date)
+                        # Convert PostgreSQL format (YYYY-MM-DD) to expected format (YYYY/MM/DD)
+                        date_str = str(record_date).replace("-", "/")
+                        dt = parse_dt(date_str)
                         if dt.year == year and dt.month == month:
                             sales = record.get("Total sales", 0)
                             if sales:
                                 total_sales_month += Decimal(str(sales))
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Failed to parse date {record_date}: {e}")
                         pass
 
         # Calculate total made since last pay day
@@ -1420,12 +1427,15 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 record_date = record.get("Date", "")
                 if record_date:
                     try:
-                        dt = parse_dt(record_date)
+                        # Convert PostgreSQL format (YYYY-MM-DD) to expected format (YYYY/MM/DD)
+                        date_str = str(record_date).replace("-", "/")
+                        dt = parse_dt(date_str)
                         if dt >= pay_day_start:
                             made = record.get("Total made", 0)
                             if made:
                                 total_made_since_payday += Decimal(str(made))
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Failed to parse date {record_date}: {e}")
                         pass
 
         # Format message

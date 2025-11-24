@@ -4,7 +4,7 @@ from typing import List, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import Config
-from time_utils import generate_am_times, generate_pm_times
+from src.time_utils import generate_am_times, generate_pm_times
 
 
 def date_choice_keyboard() -> InlineKeyboardMarkup:

@@ -15,8 +15,9 @@ build/
 credentials.json
 config_local.py
 .env
-bot.log
-sync_worker.log
+
+# Logs directory
+logs/
 *.log
 
 # Database

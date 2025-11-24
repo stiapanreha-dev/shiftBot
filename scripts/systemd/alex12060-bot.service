@@ -9,8 +9,8 @@ WorkingDirectory=/home/lexun/Alex12060
 ExecStart=/home/lexun/Alex12060/venv/bin/python3 /home/lexun/Alex12060/bot.py
 Restart=always
 RestartSec=10
-StandardOutput=append:/home/lexun/Alex12060/bot.log
-StandardError=append:/home/lexun/Alex12060/bot.log
+StandardOutput=append:/home/lexun/Alex12060/logs/bot.log
+StandardError=append:/home/lexun/Alex12060/logs/bot.log
 
 # Security settings
 NoNewPrivileges=true

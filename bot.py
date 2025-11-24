@@ -16,7 +16,7 @@ from config import PICK_PRODUCT, ENTER_AMOUNT, ADD_OR_FINISH
 from config import EDIT_MENU, EDIT_PICK_SHIFT, EDIT_FIELD
 from config import EDIT_DATE_IN, EDIT_TIME_IN, EDIT_DATE_OUT, EDIT_TIME_OUT, EDIT_TOTAL_SALES
 
-from handlers import (
+from src.handlers import (
     start,
     handle_amount_input,
     handle_edit_total_sales_input,
@@ -48,7 +48,7 @@ def setup_logging():
 
     # File handler with rotation (10MB, keep 5 backups)
     file_handler = RotatingFileHandler(
-        "bot.log",
+        "logs/bot.log",
         maxBytes=10 * 1024 * 1024,  # 10 MB
         backupCount=5,
         encoding="utf-8"

@@ -5,8 +5,8 @@ import random
 from typing import Optional, Dict, Tuple
 from datetime import datetime
 
-from sheets_service import SheetsService
-from time_utils import now_et, format_dt
+from experimental.sheets_service import SheetsService
+from src.time_utils import now_et, format_dt
 
 logger = logging.getLogger(__name__)
 
@@ -405,10 +405,11 @@ class RankService:
         message = "🏆 Rank System\n\n"
 
         for rank in ranks:
-            rank_name = rank.get("Rank Name", "")
-            min_amt = rank.get("Min Amount", 0)
-            max_amt = rank.get("Max Amount", 999999)
-            emoji = rank.get("Emoji", "")
+            # Support both SheetsService and PostgresService formats
+            rank_name = rank.get("Rank Name") or rank.get("RankName") or rank.get("rank_name") or ""
+            min_amt = rank.get("Min Amount") or rank.get("MinTotalSales") or rank.get("min_total_sales") or 0
+            max_amt = rank.get("Max Amount") or rank.get("MaxTotalSales") or rank.get("max_total_sales") or 999999
+            emoji = rank.get("Emoji") or rank.get("emoji") or ""
 
             # Format amount range
             if max_amt >= 999999:
