@@ -146,13 +146,51 @@ class PostgresService:
             else:
                 worked_hours = Decimal('0')
 
-            # Get other calculated values from shift_data
+            # Calculate financial fields if not provided
             net_sales = Decimal(str(shift_data.get('net_sales', total_sales * Decimal('0.8'))))
 
-            commission_pct = Decimal(str(shift_data.get('total_commission_pct', 0)))
-            total_per_hour = Decimal(str(shift_data.get('total_per_hour', 0)))
-            commissions = Decimal(str(shift_data.get('commission_amount', 0)))
-            total_made = Decimal(str(shift_data.get('total_made', commissions)))
+            # Get employee settings for base commission and hourly wage
+            settings = self.get_employee_settings(employee_id)
+            hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0)))
+            base_commission = Decimal(str(settings.get("Sales commission", 8.0)))
+
+            # Calculate total_per_hour
+            total_per_hour = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
+
+            # Calculate dynamic commission rate
+            dynamic_rate = Decimal(str(self.calculate_dynamic_rate(employee_id, shift_date, float(total_sales))))
+
+            # Start with base + dynamic commission
+            commission_pct = base_commission + dynamic_rate
+            flat_bonuses = Decimal('0')
+            applied_bonus_ids = []  # Track applied bonuses to mark them later
+
+            # Apply active bonuses if shift is complete (has clock_out)
+            if clock_out:
+                active_bonuses = self.get_active_bonuses(employee_id)
+                for bonus in active_bonuses:
+                    bonus_id = bonus.get("ID")
+                    bonus_type = bonus.get("Bonus Type", "")
+                    bonus_value = Decimal(str(bonus.get("Value", 0)))
+
+                    if bonus_type == "percent_next":
+                        commission_pct += bonus_value
+                        applied_bonus_ids.append(bonus_id)
+                        logger.info(f"Applied percent_next bonus {bonus_id}: +{bonus_value}%")
+                    elif bonus_type == "double_commission":
+                        commission_pct *= Decimal("2")
+                        applied_bonus_ids.append(bonus_id)
+                        logger.info(f"Applied double_commission bonus {bonus_id}: commission doubled")
+                    elif bonus_type in ["flat", "flat_immediate"]:
+                        flat_bonuses += bonus_value
+                        applied_bonus_ids.append(bonus_id)
+                        logger.info(f"Applied flat bonus {bonus_id}: +${bonus_value}")
+
+            # Calculate commissions from net sales
+            commissions = Decimal(str(shift_data.get('commission_amount', net_sales * (commission_pct / Decimal('100')))))
+
+            # Calculate total made
+            total_made = Decimal(str(shift_data.get('total_made', commissions + total_per_hour + flat_bonuses)))
 
             # Insert shift
             cursor.execute("""
@@ -178,6 +216,12 @@ class PostgresService:
             ))
 
             shift_id = cursor.fetchone()['id']
+
+            # Mark applied bonuses as used
+            for bonus_id in applied_bonus_ids:
+                if bonus_id:
+                    self.apply_bonus(bonus_id, shift_id)
+                    logger.info(f"Marked bonus {bonus_id} as applied to shift {shift_id}")
 
             # Insert products (already extracted above)
             for product_name, amount in products.items():
