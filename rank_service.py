@@ -432,11 +432,17 @@ class RankService:
             message += f"{rank_name} {emoji} ({amount_range})\n"
 
             # Format bonuses
-            bonuses = [
-                rank.get("Bonus 1"),
-                rank.get("Bonus 2"),
-                rank.get("Bonus 3")
-            ]
+            # Support both formats: individual Bonus 1/2/3 or comma-separated Bonuses
+            bonuses_str = rank.get("Bonuses") or ""
+            if bonuses_str:
+                bonuses = [b.strip() for b in bonuses_str.split(",") if b.strip()]
+            else:
+                bonuses = [
+                    rank.get("Bonus 1"),
+                    rank.get("Bonus 2"),
+                    rank.get("Bonus 3")
+                ]
+                bonuses = [b for b in bonuses if b]
 
             if rank_name == "Rookie":
                 message += "No bonuses — this is the baseline. Everyone starts here.\n"

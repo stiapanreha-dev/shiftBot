@@ -146,13 +146,53 @@ class PostgresService:
             else:
                 worked_hours = Decimal('0')
 
-            # Get other calculated values from shift_data
+            # Calculate financial fields if not provided
             net_sales = Decimal(str(shift_data.get('net_sales', total_sales * Decimal('0.8'))))
 
-            commission_pct = Decimal(str(shift_data.get('total_commission_pct', 0)))
-            total_per_hour = Decimal(str(shift_data.get('total_per_hour', 0)))
-            commissions = Decimal(str(shift_data.get('commission_amount', 0)))
-            total_made = Decimal(str(shift_data.get('total_made', commissions)))
+            # Get employee settings for base commission and hourly wage
+            settings = self.get_employee_settings(employee_id)
+            hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0)))
+            base_commission = Decimal(str(settings.get("Sales commission", 8.0)))
+
+            # Calculate total_per_hour
+            total_per_hour = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
+
+            # Calculate dynamic commission rate
+            # Convert shift_date format from YYYY/MM/DD to YYYY-MM-DD for calculate_dynamic_rate
+            shift_date_normalized = shift_date.replace("/", "-")
+            dynamic_rate = Decimal(str(self.calculate_dynamic_rate(employee_id, shift_date_normalized, float(total_sales))))
+
+            # Start with base + dynamic commission
+            commission_pct = base_commission + dynamic_rate
+            flat_bonuses = Decimal('0')
+            applied_bonus_ids = []  # Track applied bonuses to mark them later
+
+            # Apply active bonuses if shift is complete (has clock_out)
+            if clock_out:
+                active_bonuses = self.get_active_bonuses(employee_id)
+                for bonus in active_bonuses:
+                    bonus_id = bonus.get("ID")
+                    bonus_type = bonus.get("Bonus Type", "")
+                    bonus_value = Decimal(str(bonus.get("Value", 0)))
+
+                    if bonus_type == "percent_next":
+                        commission_pct += bonus_value
+                        applied_bonus_ids.append(bonus_id)
+                        logger.info(f"Applied percent_next bonus {bonus_id}: +{bonus_value}%")
+                    elif bonus_type == "double_commission":
+                        commission_pct *= Decimal("2")
+                        applied_bonus_ids.append(bonus_id)
+                        logger.info(f"Applied double_commission bonus {bonus_id}: commission doubled")
+                    elif bonus_type in ["flat", "flat_immediate"]:
+                        flat_bonuses += bonus_value
+                        applied_bonus_ids.append(bonus_id)
+                        logger.info(f"Applied flat bonus {bonus_id}: +${bonus_value}")
+
+            # Calculate commissions from net sales
+            commissions = Decimal(str(shift_data.get('commission_amount', net_sales * (commission_pct / Decimal('100')))))
+
+            # Calculate total made
+            total_made = Decimal(str(shift_data.get('total_made', commissions + total_per_hour + flat_bonuses)))
 
             # Insert shift
             cursor.execute("""
@@ -178,6 +218,12 @@ class PostgresService:
             ))
 
             shift_id = cursor.fetchone()['id']
+
+            # Mark applied bonuses as used (pass cursor to use same transaction)
+            for bonus_id in applied_bonus_ids:
+                if bonus_id:
+                    self.apply_bonus(bonus_id, shift_id, cursor=cursor)
+                    logger.info(f"Marked bonus {bonus_id} as applied to shift {shift_id}")
 
             # Insert products (already extracted above)
             for product_name, amount in products.items():
@@ -676,7 +722,7 @@ class PostgresService:
             """, (employee_id, month_start, month_end))
 
             monthly_total = cursor.fetchone()['total']
-            total_with_current = monthly_total + current_total_sales
+            total_with_current = monthly_total + Decimal(str(current_total_sales))
 
             # Use database function to get dynamic rate
             cursor.execute("SELECT get_dynamic_rate(%s) as rate", (total_with_current,))
@@ -754,7 +800,7 @@ class PostgresService:
             conn.close()
 
     def get_employee_rank(self, employee_id: int, year: int, month: int) -> Optional[Dict]:
-        """Get employee rank for a specific month using database function.
+        """Get employee rank record for a specific month.
 
         Args:
             employee_id: Employee ID
@@ -762,7 +808,7 @@ class PostgresService:
             month: Month (1-12)
 
         Returns:
-            Dict with rank info or None
+            Dict with employee rank record or None
         """
         # Try cache first
         cache_key = f"{employee_id}_{year}_{month}"
@@ -775,28 +821,38 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            # Use database function
-            cursor.execute(
-                "SELECT get_employee_rank(%s, %s, %s) as rank_name",
-                (employee_id, year, month)
-            )
+            # Get employee rank record from employee_ranks table
+            cursor.execute("""
+                SELECT
+                    er.employee_id,
+                    er.year,
+                    er.month,
+                    curr_rank.name as "Current Rank",
+                    prev_rank.name as "Previous Rank",
+                    er.notified as "Notified",
+                    er.total_sales,
+                    er.created_at,
+                    er.updated_at
+                FROM employee_ranks er
+                JOIN ranks curr_rank ON er.current_rank_id = curr_rank.id
+                LEFT JOIN ranks prev_rank ON er.previous_rank_id = prev_rank.id
+                WHERE er.employee_id = %s
+                  AND er.year = %s
+                  AND er.month = %s
+            """, (employee_id, year, month))
 
             result = cursor.fetchone()
-            if not result or not result['rank_name']:
+            if not result:
                 return None
 
-            rank_name = result['rank_name']
+            # Convert to dict
+            rank_record = dict(result)
 
-            # Get rank details from ranks list
-            ranks = self.get_ranks()
-            for rank in ranks:
-                if rank['rank_name'] == rank_name:
-                    # Cache result
-                    if self.cache_manager:
-                        self.cache_manager.set('employee_rank', cache_key, rank, ttl=300)
-                    return rank
+            # Cache result
+            if self.cache_manager:
+                self.cache_manager.set('employee_rank', cache_key, rank_record, ttl=300)
 
-            return None
+            return rank_record
 
         finally:
             cursor.close()
@@ -808,7 +864,8 @@ class PostgresService:
         new_rank: str,
         year: int,
         month: int,
-        last_updated: str = None
+        last_updated: str = None,
+        total_sales: float = None
     ) -> None:
         """Update employee rank for a month.
 
@@ -818,6 +875,7 @@ class PostgresService:
             year: Year
             month: Month (1-12)
             last_updated: Optional timestamp (not used in PostgreSQL, auto-managed)
+            total_sales: Optional total sales amount for the month
         """
         rank_name = new_rank
         conn = self._get_conn()
@@ -834,17 +892,48 @@ class PostgresService:
 
             rank_id = rank['id']
 
-            # Upsert employee rank
+            # Calculate total_sales if not provided
+            if total_sales is None:
+                cursor.execute("""
+                    SELECT COALESCE(SUM(total_sales), 0) as total
+                    FROM shifts
+                    WHERE employee_id = %s
+                      AND EXTRACT(YEAR FROM date) = %s
+                      AND EXTRACT(MONTH FROM date) = %s
+                """, (employee_id, year, month))
+                result = cursor.fetchone()
+                total_sales = float(result['total']) if result else 0.0
+
+            # Get existing current_rank_id to store as previous_rank_id
             cursor.execute("""
-                INSERT INTO employee_ranks (employee_id, year, month, current_rank_id)
-                VALUES (%s, %s, %s, %s)
+                SELECT current_rank_id FROM employee_ranks
+                WHERE employee_id = %s AND year = %s AND month = %s
+            """, (employee_id, year, month))
+
+            existing = cursor.fetchone()
+            previous_rank_id = existing['current_rank_id'] if existing else None
+
+            # Check if rank changed
+            rank_changed = existing and existing['current_rank_id'] != rank_id
+
+            # Upsert employee rank with previous_rank_id tracking
+            # Note: notified is reset to FALSE on rank change, preserved otherwise
+            cursor.execute("""
+                INSERT INTO employee_ranks (employee_id, year, month, current_rank_id, previous_rank_id, total_sales, notified)
+                VALUES (%s, %s, %s, %s, %s, %s, FALSE)
                 ON CONFLICT (employee_id, year, month) DO UPDATE
-                SET current_rank_id = EXCLUDED.current_rank_id,
+                SET previous_rank_id = COALESCE(employee_ranks.current_rank_id, EXCLUDED.previous_rank_id),
+                    current_rank_id = EXCLUDED.current_rank_id,
+                    total_sales = EXCLUDED.total_sales,
+                    notified = CASE
+                        WHEN employee_ranks.current_rank_id != EXCLUDED.current_rank_id THEN FALSE
+                        ELSE employee_ranks.notified
+                    END,
                     updated_at = now()
-            """, (employee_id, year, month, rank_id))
+            """, (employee_id, year, month, rank_id, previous_rank_id, total_sales))
 
             conn.commit()
-            logger.info(f"✓ Updated rank for employee {employee_id} ({year}-{month:02d}): {rank_name}")
+            logger.info(f"✓ Updated rank for employee {employee_id} ({year}-{month:02d}): {rank_name}, sales: ${total_sales:.2f}")
 
             # Invalidate cache
             if self.cache_manager:
@@ -854,6 +943,40 @@ class PostgresService:
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to update employee rank: {e}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    def mark_rank_notified(self, employee_id: int, year: int, month: int) -> None:
+        """Mark that employee was notified about rank change.
+
+        Args:
+            employee_id: Employee ID
+            year: Year
+            month: Month (1-12)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                UPDATE employee_ranks
+                SET notified = TRUE, updated_at = NOW()
+                WHERE employee_id = %s AND year = %s AND month = %s
+            """, (employee_id, year, month))
+
+            conn.commit()
+            logger.info(f"✓ Marked rank notified for employee {employee_id} ({year}-{month:02d})")
+
+            # Invalidate cache
+            if self.cache_manager:
+                cache_key = f"{employee_id}_{year}_{month}"
+                self.cache_manager.invalidate_key('employee_rank', cache_key)
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to mark rank notified: {e}")
             raise
         finally:
             cursor.close()
@@ -1019,15 +1142,19 @@ class PostgresService:
             cursor.close()
             conn.close()
 
-    def apply_bonus(self, bonus_id: int, shift_id: int) -> None:
+    def apply_bonus(self, bonus_id: int, shift_id: int, cursor=None) -> None:
         """Apply a bonus to a shift.
 
         Args:
             bonus_id: Bonus ID
             shift_id: Shift ID
+            cursor: Optional cursor to use (for transaction reuse)
         """
-        conn = self._get_conn()
-        cursor = conn.cursor()
+        # Use provided cursor or create new connection
+        own_connection = cursor is None
+        if own_connection:
+            conn = self._get_conn()
+            cursor = conn.cursor()
 
         try:
             cursor.execute("""
@@ -1038,7 +1165,10 @@ class PostgresService:
                 WHERE id = %s
             """, (shift_id, bonus_id))
 
-            conn.commit()
+            # Only commit if we created our own connection
+            if own_connection:
+                conn.commit()
+
             logger.info(f"✓ Applied bonus {bonus_id} to shift {shift_id}")
 
             # Invalidate cache
@@ -1046,12 +1176,15 @@ class PostgresService:
                 self.cache_manager.invalidate_key('shift_bonuses', shift_id)
 
         except Exception as e:
-            conn.rollback()
+            if own_connection:
+                conn.rollback()
             logger.error(f"Failed to apply bonus: {e}")
             raise
         finally:
-            cursor.close()
-            conn.close()
+            # Only close if we created our own connection
+            if own_connection:
+                cursor.close()
+                conn.close()
 
     def get_shift_applied_bonuses(self, shift_id: int) -> List[Dict]:
         """Get bonuses applied to a shift in SheetsService format.

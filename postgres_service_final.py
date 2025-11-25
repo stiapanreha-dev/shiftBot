@@ -150,7 +150,12 @@ class PostgresService:
             net_sales = Decimal(str(shift_data.get('net_sales', total_sales * Decimal('0.8'))))
 
             # Get employee settings for base commission and hourly wage
+            # Get employee settings for base commission and hourly wage
             settings = self.get_employee_settings(employee_id)
+            if settings is None:
+                # Auto-create employee with defaults for new users
+                self.create_default_employee_settings(employee_id)
+                settings = self.get_employee_settings(employee_id) or {}
             hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0)))
             base_commission = Decimal(str(settings.get("Sales commission", 8.0)))
 

@@ -54,11 +54,15 @@ class RankService:
             current_record = self.sheets.get_employee_rank(employee_id, year, month)
 
             if current_record:
-                old_rank = current_record.get("Current Rank", "Rookie")
+                # Get current rank for comparison
+                current_rank = current_record.get("Current Rank", "Rookie")
+                previous_rank = current_record.get("Previous Rank")
                 notified = str(current_record.get("Notified", "false")).lower() == "true"
 
-                # Check if rank changed
-                if old_rank != new_rank:
+                # Check if rank changed (compare current_rank with new calculated rank)
+                if current_rank != new_rank:
+                    # Use previous_rank for notification message (to show what user upgraded FROM)
+                    old_rank = previous_rank or current_rank
                     # Rank changed
                     is_rank_up = self._is_rank_up(old_rank, new_rank)
 
@@ -67,7 +71,7 @@ class RankService:
                     if is_rank_up and new_rank != "Rookie":
                         bonus = self._select_random_bonus(new_rank)
 
-                    # Update rank record
+                    # Update rank record with new rank and total_sales
                     self.sheets.update_employee_rank(
                         employee_id,
                         new_rank,
@@ -79,8 +83,9 @@ class RankService:
                     # Get emoji
                     emoji = self._get_rank_emoji(new_rank)
 
-                    logger.info(f"Rank changed for employee {employee_id}: {old_rank} → {new_rank}")
+                    logger.info(f"Rank changed for employee {employee_id}: {current_rank} → {new_rank}")
 
+                    # Return notification (update_employee_rank already reset notified=FALSE)
                     return {
                         "changed": True,
                         "old_rank": old_rank,
@@ -90,7 +95,14 @@ class RankService:
                         "emoji": emoji
                     }
                 else:
-                    # Rank unchanged
+                    # Rank unchanged, but update total_sales
+                    self.sheets.update_employee_rank(
+                        employee_id,
+                        new_rank,  # Same rank
+                        year,
+                        month,
+                        format_dt(now_et())
+                    )
                     return None
             else:
                 # No record yet, create initial rank
@@ -420,11 +432,17 @@ class RankService:
             message += f"{rank_name} {emoji} ({amount_range})\n"
 
             # Format bonuses
-            bonuses = [
-                rank.get("Bonus 1"),
-                rank.get("Bonus 2"),
-                rank.get("Bonus 3")
-            ]
+            # Support both formats: individual Bonus 1/2/3 or comma-separated Bonuses
+            bonuses_str = rank.get("Bonuses") or ""
+            if bonuses_str:
+                bonuses = [b.strip() for b in bonuses_str.split(",") if b.strip()]
+            else:
+                bonuses = [
+                    rank.get("Bonus 1"),
+                    rank.get("Bonus 2"),
+                    rank.get("Bonus 3")
+                ]
+                bonuses = [b for b in bonuses if b]
 
             if rank_name == "Rookie":
                 message += "No bonuses — this is the baseline. Everyone starts here.\n"
