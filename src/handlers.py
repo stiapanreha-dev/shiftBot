@@ -876,7 +876,7 @@ async def handle_finish_shift(update: Update, context: ContextTypes.DEFAULT_TYPE
         summary = build_summary(shift_data, shift_id, created_shift)
 
         # Import main_menu_button here to avoid circular import
-        from keyboards import main_menu_button
+        from src.keyboards import main_menu_button
 
         sent_msg = await query.message.reply_text(summary, reply_markup=main_menu_button())
         # Save keyboard message ID
@@ -1145,7 +1145,7 @@ async def handle_edit_time_in(update: Update, context: ContextTypes.DEFAULT_TYPE
         success = sheets.update_shift_field(shift_id, "Clock in", clock_in_str)
 
         if success:
-            from keyboards import main_menu_button
+            from src.keyboards import main_menu_button
 
             # Get updated shift data
             updated_shift = sheets.get_shift_by_id(shift_id)
@@ -1217,7 +1217,7 @@ async def handle_edit_time_out(update: Update, context: ContextTypes.DEFAULT_TYP
         success = sheets.update_shift_field(shift_id, "Clock out", clock_out_str)
 
         if success:
-            from keyboards import main_menu_button
+            from src.keyboards import main_menu_button
 
             # Get updated shift data
             updated_shift = sheets.get_shift_by_id(shift_id)
@@ -1291,7 +1291,7 @@ async def handle_edit_total_sales_input(update: Update, context: ContextTypes.DE
             updated_shift = sheets.get_shift_by_id(shift_id)
 
             if updated_shift:
-                from keyboards import main_menu_button
+                from src.keyboards import main_menu_button
 
                 # Get employee ID
                 employee_id = context.user_data.get("employee_id")
