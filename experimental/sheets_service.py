@@ -8,7 +8,7 @@ import gspread
 from gspread.exceptions import APIError, WorksheetNotFound
 
 from config import Config
-from time_utils import parse_dt
+from src.time_utils import parse_dt
 
 logger = logging.getLogger(__name__)
 
