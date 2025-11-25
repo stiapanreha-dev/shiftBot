@@ -649,11 +649,12 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
+            # Set id = telegram_id so foreign keys in shifts work correctly
             cursor.execute("""
-                INSERT INTO employees (name, telegram_id, is_active)
-                VALUES (%s, %s, TRUE)
-                ON CONFLICT (telegram_id) DO NOTHING
-            """, (name, telegram_id))
+                INSERT INTO employees (id, name, telegram_id, is_active)
+                VALUES (%s, %s, %s, TRUE)
+                ON CONFLICT (id) DO NOTHING
+            """, (telegram_id, name, telegram_id))
 
             conn.commit()
             logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id})")
