@@ -583,16 +583,18 @@ class PostgresService:
                 return None
 
             # Convert to SheetsService format
-            # Note: PostgreSQL schema doesn't have commission/wage, using defaults
+            hourly_wage = float(employee['hourly_wage']) if employee['hourly_wage'] else 15.0
+            sales_commission = float(employee['sales_commission']) if employee['sales_commission'] else 8.0
+
             result = {
                 'EmployeeID': employee['id'],
                 'employee_id': employee['id'],
                 'EmployeeName': employee['name'],
                 'employee_name': employee['name'],
-                'BaseCommissionPct': Decimal('8.0'),  # Default
-                'base_commission_pct': Decimal('8.0'),
-                'Sales commission': 8.0,  # Alias for compatibility
-                'Hourly wage': 15.0,  # Default
+                'BaseCommissionPct': Decimal(str(sales_commission)),
+                'base_commission_pct': Decimal(str(sales_commission)),
+                'Sales commission': sales_commission,
+                'Hourly wage': hourly_wage,
                 'Active': employee['is_active'],
                 'active': employee['is_active'],
             }

@@ -369,6 +369,70 @@ class PostgresSyncWorker:
             logger.error(traceback.format_exc())
             raise
 
+    def _sync_employee(self, record_id: int, operation: str, data: dict):
+        """Sync an employee record to Google Sheets EmployeeSettings.
+
+        Args:
+            record_id: Employee ID
+            operation: INSERT, UPDATE, or DELETE
+            data: Record data (JSONB from PostgreSQL)
+        """
+        try:
+            worksheet = self.spreadsheet.worksheet('EmployeeSettings')
+
+            if operation == 'DELETE':
+                # Find and delete row by employee ID
+                cell = worksheet.find(str(record_id), in_column=1)
+                if cell:
+                    worksheet.delete_rows(cell.row)
+                    logger.info(f"Deleted employee {record_id} from Google Sheets")
+                return
+
+            # For INSERT/UPDATE, get the full data from PostgreSQL
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, name, telegram_id, is_active, hourly_wage, sales_commission
+                    FROM employees
+                    WHERE id = %s
+                """, (record_id,))
+                employee = cur.fetchone()
+
+            if not employee:
+                logger.warning(f"Employee {record_id} not found in database")
+                return
+
+            # Format row data for EmployeeSettings worksheet
+            # Columns: EmployeeID, EmployeeName, Hourly wage, Sales commission, Active
+            row_data = [
+                employee['id'],
+                employee['name'],
+                float(employee['hourly_wage']) if employee['hourly_wage'] else 15.0,
+                float(employee['sales_commission']) if employee['sales_commission'] else 8.0,
+                'TRUE' if employee['is_active'] else 'FALSE'
+            ]
+
+            # Check if row exists
+            try:
+                cell = worksheet.find(str(record_id), in_column=1)
+                if cell:
+                    # Update existing row
+                    worksheet.update(f'A{cell.row}:E{cell.row}', [row_data])
+                    logger.info(f"Updated employee {record_id} in Google Sheets")
+                else:
+                    # Append new row
+                    worksheet.append_row(row_data)
+                    logger.info(f"Inserted employee {record_id} to Google Sheets")
+            except gspread.exceptions.CellNotFound:
+                # Append new row
+                worksheet.append_row(row_data)
+                logger.info(f"Inserted employee {record_id} to Google Sheets")
+
+        except Exception as e:
+            logger.error(f"Failed to sync employee {record_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+
     def _mark_synced(self, sync_id: int):
         """Mark a sync record as synced.
 
@@ -453,6 +517,8 @@ class PostgresSyncWorker:
                         self._sync_active_bonus(record_id, operation, data)
                     elif table_name == 'employee_ranks':
                         self._sync_employee_rank(record_id, operation, data)
+                    elif table_name == 'employees':
+                        self._sync_employee(record_id, operation, data)
                     else:
                         logger.warning(f"Unknown table: {table_name}")
                         continue
