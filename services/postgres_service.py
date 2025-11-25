@@ -323,8 +323,9 @@ class PostgresService:
 
             products = cursor.fetchall()
 
-            # Initialize all products to 0
-            for product_name in Config.PRODUCTS:
+            # Initialize all products to 0 (load from DB)
+            all_products = self.get_products()
+            for product_name in all_products:
                 result[product_name] = 0
                 result[f"{product_name.lower()}_sales"] = 0
 
@@ -547,6 +548,42 @@ class PostgresService:
                     result.append(shift_dict)
 
             return result
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ========== Products ==========
+
+    def get_products(self) -> List[str]:
+        """Get list of active products from database.
+
+        Returns:
+            List of product names ordered by display_order
+        """
+        # Try cache first
+        if self.cache_manager:
+            cached = self.cache_manager.get('products', 'all')
+            if cached:
+                return cached
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT name FROM products
+                WHERE is_active = TRUE
+                ORDER BY display_order, id
+            """)
+
+            products = [row['name'] for row in cursor.fetchall()]
+
+            # Cache result (15 min TTL - products change rarely)
+            if self.cache_manager:
+                self.cache_manager.set('products', 'all', products, ttl=900)
+
+            return products
 
         finally:
             cursor.close()
@@ -1283,7 +1320,8 @@ class PostgresService:
             List of product names
         """
         models = []
-        for product in Config.PRODUCTS:
+        all_products = self.get_products()
+        for product in all_products:
             # Try both formats
             if shift.get(product, 0) > 0 or shift.get(f"{product.lower()}_sales", 0) > 0:
                 models.append(product)

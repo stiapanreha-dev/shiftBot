@@ -260,9 +260,9 @@ def format_shift_details(shift_data: Dict, employee_id: int, shift_id: int) -> s
     ]
 
     # Get products from shift data
-    # Products are stored as individual columns in Google Sheets
+    # Products are stored in database
     products = {}
-    product_names = ["Bella", "Laura", "Molly", "Sophie", "Alice", "Emma", "Other"]
+    product_names = sheets_service.get_products()
 
     for product_name in product_names:
         value = shift_data.get(product_name, "")

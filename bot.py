@@ -23,6 +23,7 @@ from src.handlers import (
     handle_callback_query,
     handle_unexpected_text,
 )
+from services.singleton import sheets_service
 
 
 # Setup logging to file and console
@@ -149,7 +150,7 @@ def main() -> None:
 
     # Log startup
     logger.info("Bot started - polling for updates...")
-    logger.info(f"Products configured: {', '.join(Config.PRODUCTS)}")
+    logger.info(f"Products from DB: {', '.join(sheets_service.get_products())}")
     logger.info(f"Commission rate: {Config.COMMISSION_RATE * 100}%")
     logger.info(f"Payout rate: {Config.PAYOUT_RATE * 100}%")
 

@@ -3,8 +3,8 @@
 from typing import List, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import Config
 from src.time_utils import generate_am_times, generate_pm_times
+from services.singleton import sheets_service
 
 
 def date_choice_keyboard() -> InlineKeyboardMarkup:
@@ -86,7 +86,8 @@ def products_keyboard(exclude: Optional[List[str]] = None) -> InlineKeyboardMark
         InlineKeyboardMarkup with product buttons.
     """
     exclude = exclude or []
-    available_products = [p for p in Config.PRODUCTS if p not in exclude]
+    all_products = sheets_service.get_products()
+    available_products = [p for p in all_products if p not in exclude]
 
     buttons = []
     row = []
