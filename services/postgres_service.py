@@ -561,12 +561,7 @@ class PostgresService:
         Returns:
             List of product names ordered by display_order
         """
-        # Try cache first
-        if self.cache_manager:
-            cached = self.cache_manager.get('products', 'all')
-            if cached:
-                return cached
-
+        # No caching - always fetch fresh (query is fast, products may change)
         conn = self._get_conn()
         cursor = conn.cursor()
 
@@ -577,13 +572,7 @@ class PostgresService:
                 ORDER BY display_order, id
             """)
 
-            products = [row['name'] for row in cursor.fetchall()]
-
-            # Cache result (15 min TTL - products change rarely)
-            if self.cache_manager:
-                self.cache_manager.set('products', 'all', products, ttl=900)
-
-            return products
+            return [row['name'] for row in cursor.fetchall()]
 
         finally:
             cursor.close()
