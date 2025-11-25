@@ -151,6 +151,10 @@ class PostgresService:
 
             # Get employee settings for base commission and hourly wage
             settings = self.get_employee_settings(employee_id)
+            if settings is None:
+                # Auto-create employee for new user
+                self._create_employee_from_shift(employee_id, employee_name)
+                settings = self.get_employee_settings(employee_id)
             hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0)))
             base_commission = Decimal(str(settings.get("Sales commission", 8.0)))
 
@@ -570,7 +574,7 @@ class PostgresService:
 
         try:
             cursor.execute("""
-                SELECT * FROM employees WHERE id = %s AND is_active = TRUE
+                SELECT * FROM employees WHERE telegram_id = %s AND is_active = TRUE
             """, (employee_id,))
 
             employee = cursor.fetchone()
@@ -629,6 +633,38 @@ class PostgresService:
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to create default employee settings: {e}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _create_employee_from_shift(self, telegram_id: int, name: str) -> None:
+        """Auto-create employee record from shift data.
+
+        Args:
+            telegram_id: Telegram user ID
+            name: Employee name
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                INSERT INTO employees (name, telegram_id, is_active)
+                VALUES (%s, %s, TRUE)
+                ON CONFLICT (telegram_id) DO NOTHING
+            """, (name, telegram_id))
+
+            conn.commit()
+            logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id})")
+
+            # Invalidate cache
+            if self.cache_manager:
+                self.cache_manager.invalidate_key('employee_settings', telegram_id)
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to auto-create employee: {e}")
             raise
         finally:
             cursor.close()
