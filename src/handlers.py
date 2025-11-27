@@ -161,7 +161,7 @@ def get_commission_breakdown(
     # Get base commission
     try:
         settings = sheets.get_employee_settings(employee_id)
-        base_commission = float(settings.get("Sales commission (%)", 8.0))
+        base_commission = float(settings.get("Sales commission", 8.0))
     except Exception:
         base_commission = 8.0
 
