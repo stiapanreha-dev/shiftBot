@@ -642,11 +642,7 @@ class PostgresService:
             Employee settings dict or None
         """
         # Try cache first
-        if self.cache_manager:
-            cached = self.cache_manager.get('employee_settings', employee_id)
-            if cached:
-                return cached
-
+        # Always fetch fresh from DB, no caching for employee settings
         conn = self._get_conn()
         cursor = conn.cursor()
 
@@ -676,10 +672,6 @@ class PostgresService:
                 'Active': employee['is_active'],
                 'active': employee['is_active'],
             }
-
-            # Cache result
-            if self.cache_manager:
-                self.cache_manager.set('employee_settings', employee_id, result, ttl=600)
 
             return result
 
