@@ -387,14 +387,8 @@ class PostgresService:
         try:
             # Special handling for time fields
             if pg_field in ['clock_in', 'clock_out']:
-                # Get current date
-                cursor.execute("SELECT date FROM shifts WHERE id = %s", (shift_id,))
-                shift = cursor.fetchone()
-                if not shift:
-                    return False
-
-                shift_date = shift['date']
-                full_datetime = f"{shift_date} {value}:00"
+                # Value comes as 'YYYY/MM/DD HH:MM:SS' - convert to PostgreSQL format
+                full_datetime = value.replace("/", "-")
 
                 cursor.execute(
                     sql.SQL("UPDATE shifts SET {} = %s, updated_at = now() WHERE id = %s").format(
