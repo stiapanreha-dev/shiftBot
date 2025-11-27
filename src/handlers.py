@@ -1036,6 +1036,7 @@ async def handle_edit_field_choice(update: Update, context: ContextTypes.DEFAULT
     if field == "IN":
         # Edit Clock in - choose date relative to record Date
         record_date_str = shift_data.get("Date", "")
+        record_date_str = str(record_date_str).replace("-", "/")
         record_date = parse_dt(record_date_str).date()
         context.user_data["edit_record_date"] = record_date
 
@@ -1053,6 +1054,7 @@ async def handle_edit_field_choice(update: Update, context: ContextTypes.DEFAULT
     elif field == "OUT":
         # Edit Clock out - use date from record Date
         record_date_str = shift_data.get("Date", "")
+        record_date_str = str(record_date_str).replace("-", "/")
         record_date = parse_dt(record_date_str).date()
         context.user_data["edit_record_date"] = record_date
         context.user_data["clock_out_date"] = record_date
