@@ -1147,6 +1147,9 @@ async def handle_edit_time_in(update: Update, context: ContextTypes.DEFAULT_TYPE
         success = sheets.update_shift_field(shift_id, "Clock in", clock_in_str)
 
         if success:
+            # Recalculate worked hours after time change
+            sheets.recalculate_worked_hours(shift_id)
+
             from src.keyboards import main_menu_button
 
             # Get updated shift data
@@ -1219,6 +1222,9 @@ async def handle_edit_time_out(update: Update, context: ContextTypes.DEFAULT_TYP
         success = sheets.update_shift_field(shift_id, "Clock out", clock_out_str)
 
         if success:
+            # Recalculate worked hours after time change
+            sheets.recalculate_worked_hours(shift_id)
+
             from src.keyboards import main_menu_button
 
             # Get updated shift data

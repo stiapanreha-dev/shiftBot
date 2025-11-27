@@ -421,6 +421,64 @@ class PostgresService:
             cursor.close()
             conn.close()
 
+    def recalculate_worked_hours(self, shift_id: int) -> bool:
+        """Recalculate worked_hours, total_per_hour based on clock_in/clock_out.
+
+        Args:
+            shift_id: Shift ID
+
+        Returns:
+            True if successful
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                "SELECT clock_in, clock_out, commissions FROM shifts WHERE id = %s",
+                (shift_id,)
+            )
+            shift = cursor.fetchone()
+
+            if not shift or not shift['clock_in'] or not shift['clock_out']:
+                return False
+
+            clock_in = shift['clock_in']
+            clock_out = shift['clock_out']
+            commissions = shift['commissions'] or Decimal('0')
+
+            # Calculate worked hours
+            diff = clock_out - clock_in
+            worked_hours = Decimal(str(diff.total_seconds() / 3600))
+            worked_hours = worked_hours.quantize(Decimal('0.01'))
+
+            # Recalculate total_per_hour
+            total_per_hour = commissions / worked_hours if worked_hours > 0 else Decimal('0')
+
+            cursor.execute("""
+                UPDATE shifts
+                SET worked_hours = %s,
+                    total_per_hour = %s,
+                    updated_at = now()
+                WHERE id = %s
+            """, (worked_hours, total_per_hour, shift_id))
+
+            conn.commit()
+            logger.info(f"✓ Recalculated worked_hours for shift {shift_id}: {worked_hours}h")
+
+            if self.cache_manager:
+                self.cache_manager.invalidate_key('shift', shift_id)
+
+            return True
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to recalculate worked_hours: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
     def update_total_sales(self, shift_id: int, total_sales: Decimal) -> bool:
         """Update total sales for a shift.
 
