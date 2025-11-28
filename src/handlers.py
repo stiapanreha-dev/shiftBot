@@ -27,6 +27,9 @@ from src.keyboards import (
 
 logger = logging.getLogger(__name__)
 
+# Admin user IDs for privileged commands
+ADMIN_IDS = [7867347055, 2125295046, 8152358885]
+
 
 # =============================================================================
 # UTILITIES
@@ -1714,3 +1717,56 @@ async def handle_unexpected_text(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["chat_id"] = update.effective_chat.id
 
     return START
+
+
+# =============================================================================
+# ADMIN COMMANDS
+# =============================================================================
+
+async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Recalculate ranks for all employees (admin only).
+
+    Args:
+        update: Telegram update.
+        context: Bot context.
+    """
+    user = update.effective_user
+
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Access denied. Admin only.")
+        return
+
+    await update.message.reply_text("🔄 Recalculating ranks...")
+
+    sheets = sheets_service
+    now = now_et()
+    year, month = now.year, now.month
+
+    try:
+        # Get all unique employee IDs from shifts this month
+        conn = sheets._get_conn()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT DISTINCT employee_id
+            FROM shifts
+            WHERE EXTRACT(YEAR FROM date) = %s
+            AND EXTRACT(MONTH FROM date) = %s
+        """, (year, month))
+
+        employee_ids = [row['employee_id'] for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+
+        updated = 0
+        for emp_id in employee_ids:
+            rank_service = RankService(sheets)
+            rank_service.check_and_update_rank(emp_id, year, month)
+            updated += 1
+
+        await update.message.reply_text(f"✅ Ranks recalculated for {updated} employees")
+        logger.info(f"[ADMIN] User {user.id} recalculated ranks for {updated} employees")
+
+    except Exception as e:
+        logger.error(f"[ADMIN] Failed to recalculate ranks: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Error: {e}")

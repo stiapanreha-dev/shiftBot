@@ -22,6 +22,7 @@ from src.handlers import (
     handle_edit_total_sales_input,
     handle_callback_query,
     handle_unexpected_text,
+    recalc_ranks_command,
 )
 from services.singleton import sheets_service
 
@@ -147,6 +148,7 @@ def main() -> None:
 
     # Add handlers
     application.add_handler(conversation_handler)
+    application.add_handler(CommandHandler("recalc_ranks", recalc_ranks_command))
 
     # Log startup
     logger.info("Bot started - polling for updates...")
