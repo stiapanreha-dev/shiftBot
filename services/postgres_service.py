@@ -797,11 +797,11 @@ class PostgresService:
         shift_date: str,
         current_total_sales: Decimal = Decimal("0")
     ) -> float:
-        """Calculate dynamic commission rate using database function.
+        """Calculate dynamic commission rate based on current shift sales only.
 
         Args:
-            employee_id: Employee ID
-            shift_date: Shift date (YYYY-MM-DD)
+            employee_id: Employee ID (kept for interface compatibility)
+            shift_date: Shift date (kept for interface compatibility)
             current_total_sales: Current shift total sales
 
         Returns:
@@ -811,30 +811,8 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            # Calculate total sales for the month including current shift
-            shift_dt = datetime.strptime(shift_date, "%Y-%m-%d").date()
-            month_start = date(shift_dt.year, shift_dt.month, 1)
-
-            # Calculate next month start
-            if shift_dt.month == 12:
-                month_end = date(shift_dt.year + 1, 1, 1)
-            else:
-                month_end = date(shift_dt.year, shift_dt.month + 1, 1)
-
-            # Get total sales for the month
-            cursor.execute("""
-                SELECT COALESCE(SUM(total_sales), 0) as total
-                FROM shifts
-                WHERE employee_id = %s
-                AND date >= %s
-                AND date < %s
-            """, (employee_id, month_start, month_end))
-
-            monthly_total = cursor.fetchone()['total']
-            total_with_current = monthly_total + Decimal(str(current_total_sales))
-
-            # Use database function to get dynamic rate
-            cursor.execute("SELECT get_dynamic_rate(%s) as rate", (total_with_current,))
+            # Use only current shift sales for dynamic rate
+            cursor.execute("SELECT get_dynamic_rate(%s) as rate", (current_total_sales,))
             result = cursor.fetchone()
 
             return float(result['rate']) if result else 0.0
