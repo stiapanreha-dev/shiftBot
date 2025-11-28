@@ -422,7 +422,7 @@ class PostgresService:
             conn.close()
 
     def recalculate_worked_hours(self, shift_id: int) -> bool:
-        """Recalculate worked_hours, total_per_hour based on clock_in/clock_out.
+        """Recalculate worked_hours, total_per_hour, total_made based on clock_in/clock_out.
 
         Args:
             shift_id: Shift ID
@@ -435,7 +435,7 @@ class PostgresService:
 
         try:
             cursor.execute(
-                "SELECT clock_in, clock_out, commissions FROM shifts WHERE id = %s",
+                "SELECT clock_in, clock_out, commissions, employee_id FROM shifts WHERE id = %s",
                 (shift_id,)
             )
             shift = cursor.fetchone()
@@ -446,25 +446,34 @@ class PostgresService:
             clock_in = shift['clock_in']
             clock_out = shift['clock_out']
             commissions = shift['commissions'] or Decimal('0')
+            employee_id = shift['employee_id']
 
             # Calculate worked hours
             diff = clock_out - clock_in
             worked_hours = Decimal(str(diff.total_seconds() / 3600))
             worked_hours = worked_hours.quantize(Decimal('0.01'))
 
-            # Recalculate total_per_hour
-            total_per_hour = commissions / worked_hours if worked_hours > 0 else Decimal('0')
+            # Get hourly_wage from employee settings
+            settings = self.get_employee_settings(employee_id)
+            hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0))) if settings else Decimal('15.0')
+
+            # Recalculate total_per_hour = worked_hours * hourly_wage
+            total_per_hour = worked_hours * hourly_wage
+
+            # Recalculate total_made
+            total_made = total_per_hour + commissions
 
             cursor.execute("""
                 UPDATE shifts
                 SET worked_hours = %s,
                     total_per_hour = %s,
+                    total_made = %s,
                     updated_at = now()
                 WHERE id = %s
-            """, (worked_hours, total_per_hour, shift_id))
+            """, (worked_hours, total_per_hour, total_made, shift_id))
 
             conn.commit()
-            logger.info(f"✓ Recalculated worked_hours for shift {shift_id}: {worked_hours}h")
+            logger.info(f"✓ Recalculated shift {shift_id}: {worked_hours}h, ${total_per_hour}/h, total=${total_made}")
 
             if self.cache_manager:
                 self.cache_manager.invalidate_key('shift', shift_id)
@@ -493,8 +502,8 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            # Get commission_pct
-            cursor.execute("SELECT commission_pct, worked_hours FROM shifts WHERE id = %s", (shift_id,))
+            # Get shift data including employee_id
+            cursor.execute("SELECT commission_pct, worked_hours, employee_id FROM shifts WHERE id = %s", (shift_id,))
             shift = cursor.fetchone()
 
             if not shift:
@@ -502,12 +511,17 @@ class PostgresService:
 
             commission_pct = shift['commission_pct']
             worked_hours = shift['worked_hours'] or Decimal('1')
+            employee_id = shift['employee_id']
+
+            # Get hourly_wage from employee settings
+            settings = self.get_employee_settings(employee_id)
+            hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0))) if settings else Decimal('15.0')
 
             # Recalculate
             net_sales = total_sales * Decimal('0.8')
-            commissions = total_sales * commission_pct / 100
-            total_per_hour = commissions / worked_hours if worked_hours > 0 else Decimal('0')
-            total_made = commissions
+            commissions = net_sales * commission_pct / 100
+            total_per_hour = worked_hours * hourly_wage
+            total_made = total_per_hour + commissions
 
             # Update shift
             cursor.execute("""
