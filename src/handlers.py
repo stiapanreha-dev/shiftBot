@@ -1759,13 +1759,43 @@ async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYP
         conn.close()
 
         updated = 0
+        rank_changes = []  # Track rank changes for report
+
         for emp_id in employee_ids:
             rank_service = RankService(sheets)
-            rank_service.check_and_update_rank(emp_id, year, month)
+            rank_change = rank_service.check_and_update_rank(emp_id, year, month)
             updated += 1
 
-        await update.message.reply_text(f"✅ Ranks recalculated for {updated} employees")
-        logger.info(f"[ADMIN] User {user.id} recalculated ranks for {updated} employees")
+            # If rank changed and there's a bonus
+            if rank_change and rank_change.get("changed"):
+                bonus = rank_change.get("bonus")
+                if bonus:
+                    # Apply bonus (will be used on next shift)
+                    rank_service.apply_rank_bonus(emp_id, bonus)
+
+                # Track for report
+                rank_changes.append({
+                    "employee_id": emp_id,
+                    "old_rank": rank_change.get("old_rank"),
+                    "new_rank": rank_change.get("new_rank"),
+                    "rank_up": rank_change.get("rank_up"),
+                    "bonus": bonus
+                })
+
+        # Build report message
+        report = f"✅ Ranks recalculated for {updated} employees\n\n"
+
+        if rank_changes:
+            report += "📊 Rank changes:\n"
+            for change in rank_changes:
+                direction = "⬆️" if change["rank_up"] else "⬇️"
+                bonus_text = f" | Bonus: {change['bonus']}" if change["bonus"] else ""
+                report += f"{direction} {change['employee_id']}: {change['old_rank']} → {change['new_rank']}{bonus_text}\n"
+        else:
+            report += "No rank changes detected."
+
+        await update.message.reply_text(report)
+        logger.info(f"[ADMIN] User {user.id} recalculated ranks: {len(rank_changes)} changes")
 
     except Exception as e:
         logger.error(f"[ADMIN] Failed to recalculate ranks: {e}", exc_info=True)
