@@ -1743,16 +1743,20 @@ async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYP
     year, month = now.year, now.month
 
     try:
-        # Get all unique employee IDs from shifts this month
+        # Get all unique employee IDs from shifts AND employee_ranks this month
+        # This ensures we recalculate even for employees whose shifts were deleted
         conn = sheets._get_conn()
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT DISTINCT employee_id
-            FROM shifts
-            WHERE EXTRACT(YEAR FROM date) = %s
-            AND EXTRACT(MONTH FROM date) = %s
-        """, (year, month))
+            SELECT DISTINCT employee_id FROM (
+                SELECT employee_id FROM shifts
+                WHERE EXTRACT(YEAR FROM date) = %s AND EXTRACT(MONTH FROM date) = %s
+                UNION
+                SELECT employee_id FROM employee_ranks
+                WHERE year = %s AND month = %s
+            ) combined
+        """, (year, month, year, month))
 
         employee_ids = [row['employee_id'] for row in cursor.fetchall()]
         cursor.close()
