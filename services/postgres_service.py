@@ -1206,7 +1206,8 @@ class PostgresService:
         employee_id: int,
         bonus_type: str,
         value: Decimal,
-        notes: str = ""
+        created_at: str = None,
+        shift_id: int = None
     ) -> int:
         """Create a new bonus.
 
@@ -1214,7 +1215,8 @@ class PostgresService:
             employee_id: Employee ID
             bonus_type: Bonus type code
             value: Bonus value (percentage or flat amount)
-            notes: Optional notes
+            created_at: Optional creation timestamp (ignored, uses DB default)
+            shift_id: Optional shift ID to link bonus to
 
         Returns:
             Bonus ID
@@ -1223,11 +1225,18 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            cursor.execute("""
-                INSERT INTO active_bonuses (employee_id, bonus_type, value, applied)
-                VALUES (%s, %s, %s, FALSE)
-                RETURNING id
-            """, (employee_id, bonus_type, value))
+            if shift_id:
+                cursor.execute("""
+                    INSERT INTO active_bonuses (employee_id, bonus_type, value, shift_id, applied)
+                    VALUES (%s, %s, %s, %s, FALSE)
+                    RETURNING id
+                """, (employee_id, bonus_type, value, shift_id))
+            else:
+                cursor.execute("""
+                    INSERT INTO active_bonuses (employee_id, bonus_type, value, applied)
+                    VALUES (%s, %s, %s, FALSE)
+                    RETURNING id
+                """, (employee_id, bonus_type, value))
 
             bonus_id = cursor.fetchone()['id']
             conn.commit()
