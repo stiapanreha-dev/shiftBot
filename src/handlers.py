@@ -28,7 +28,7 @@ from src.keyboards import (
 logger = logging.getLogger(__name__)
 
 # Admin user IDs for privileged commands
-ADMIN_IDS = [7867347055, 2125295046, 8152358885]
+ADMIN_IDS = [7867347055, 2125295046, 8152358885, 7367062056]
 
 
 # =============================================================================
