@@ -86,6 +86,36 @@ class PostgresSyncWorker:
         logger.info(f"Received signal {signum}, shutting down gracefully...")
         self.running = False
 
+    def _reconnect_db(self) -> bool:
+        """Reconnect to PostgreSQL.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if self.db_conn and not self.db_conn.closed:
+                try:
+                    self.db_conn.close()
+                except Exception:
+                    pass
+            self.db_conn = psycopg2.connect(**self.db_params)
+            logger.info("Database reconnected successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to reconnect to database: {e}")
+            return False
+
+    def _ensure_db_connection(self) -> bool:
+        """Ensure database connection is alive, reconnect if needed.
+
+        Returns:
+            True if connection is alive, False otherwise
+        """
+        if self.db_conn is None or self.db_conn.closed:
+            logger.warning("Database connection lost, reconnecting...")
+            return self._reconnect_db()
+        return True
+
     def _init_connections(self) -> bool:
         """Initialize database and Google Sheets connections.
 
@@ -121,6 +151,10 @@ class PostgresSyncWorker:
             List of sync records (dicts)
         """
         try:
+            # Ensure database connection is alive
+            if not self._ensure_db_connection():
+                return []
+
             with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     SELECT id, table_name, record_id, operation, data, created_at
