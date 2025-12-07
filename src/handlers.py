@@ -797,10 +797,28 @@ async def check_and_notify_rank(
         sheets = sheets_service
         rank_service = RankService(sheets)
 
-        # Get current month/year
-        now = now_et()
-        year = now.year
-        month = now.month
+        # Get year/month from the shift date (not current date!)
+        shift = sheets.get_shift_by_id(shift_id)
+        if shift:
+            # Parse shift date to get year and month
+            shift_date_str = shift.get('date') or shift.get('shift_date') or shift.get('Date')
+            if shift_date_str:
+                # Handle both datetime and date formats
+                date_part = str(shift_date_str).split()[0]  # "2025-11-30 00:00:00" -> "2025-11-30"
+                date_part = date_part.replace("/", "-")  # Normalize format
+                parts = date_part.split("-")
+                year = int(parts[0])
+                month = int(parts[1])
+            else:
+                # Fallback to current date
+                now = now_et()
+                year = now.year
+                month = now.month
+        else:
+            # Fallback to current date if shift not found
+            now = now_et()
+            year = now.year
+            month = now.month
 
         # Check for rank change
         rank_change = rank_service.check_and_update_rank(user_id, year, month)
