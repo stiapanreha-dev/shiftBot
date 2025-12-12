@@ -10,8 +10,8 @@ Usage:
     python3 pg_sync_worker.py [--interval SECONDS] [--once]
 
 Author: Claude Code (PostgreSQL sync worker)
-Date: 2025-11-24
-Version: 1.0.0
+Date: 2025-12-12
+Version: 1.1.0
 """
 
 import logging
@@ -203,9 +203,11 @@ class PostgresSyncWorker:
                         s.total_sales,
                         s.net_sales,
                         s.commission_pct,
-                        s.total_per_hour,
+                        s.total_hourly,
                         s.commissions,
                         s.total_made,
+                        s.rolling_average,
+                        s.bonus_counter,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 1), 0) as model_a,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 2), 0) as model_b,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 3), 0) as model_c
@@ -219,6 +221,9 @@ class PostgresSyncWorker:
                 return
 
             # Format row data for Google Sheets
+            # Columns: ID, Date, EmployeeID, EmployeeName, ClockIn, ClockOut, WorkedHours,
+            #          ModelA, ModelB, ModelC, TotalSales, NetSales, CommissionPct,
+            #          TotalHourly, Commissions, TotalMade, RollingAverage, BonusCounter
             row_data = [
                 shift['id'],
                 shift['date'].strftime('%Y-%m-%d %H:%M:%S') if shift['date'] else '',
@@ -233,9 +238,11 @@ class PostgresSyncWorker:
                 float(shift['total_sales']) if shift['total_sales'] else 0,
                 float(shift['net_sales']) if shift['net_sales'] else 0,
                 float(shift['commission_pct']) if shift['commission_pct'] else 0,
-                float(shift['total_per_hour']) if shift['total_per_hour'] else 0,
+                float(shift['total_hourly']) if shift['total_hourly'] else 0,
                 float(shift['commissions']) if shift['commissions'] else 0,
-                float(shift['total_made']) if shift['total_made'] else 0
+                float(shift['total_made']) if shift['total_made'] else 0,
+                float(shift['rolling_average']) if shift['rolling_average'] else 0,
+                'TRUE' if shift['bonus_counter'] else 'FALSE'
             ]
 
             # Check if row exists
@@ -243,7 +250,7 @@ class PostgresSyncWorker:
                 cell = worksheet.find(str(record_id), in_column=1)
                 if cell:
                     # Update existing row
-                    worksheet.update(f'A{cell.row}:P{cell.row}', [row_data])
+                    worksheet.update(f'A{cell.row}:R{cell.row}', [row_data])
                     logger.info(f"Updated shift {record_id} in Google Sheets")
                 else:
                     # Append new row
@@ -467,6 +474,100 @@ class PostgresSyncWorker:
             logger.error(traceback.format_exc())
             raise
 
+    def _sync_employee_fortnight(self, record_id: int, operation: str, data: dict):
+        """Sync an employee fortnight record to Google Sheets.
+
+        Args:
+            record_id: Fortnight ID
+            operation: INSERT, UPDATE, or DELETE
+            data: Record data (JSONB from PostgreSQL)
+        """
+        try:
+            worksheet = self.spreadsheet.worksheet('EmployeeFortnights')
+
+            if operation == 'DELETE':
+                # Find and delete row
+                cell = worksheet.find(str(record_id), in_column=1)
+                if cell:
+                    worksheet.delete_rows(cell.row)
+                    logger.info(f"Deleted employee fortnight {record_id} from Google Sheets")
+                return
+
+            # For INSERT/UPDATE, get the full data from PostgreSQL
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        ef.id,
+                        ef.employee_id,
+                        e.name as employee_name,
+                        ef.year,
+                        ef.period,
+                        ef.start_date,
+                        ef.end_date,
+                        ef.total_hours,
+                        ef.total_sales,
+                        ef.total_commissions,
+                        ef.bonus_counter_count,
+                        ef.bonus_counter_amount,
+                        ef.total_salary,
+                        ef.paid,
+                        ef.paid_at,
+                        ef.created_at
+                    FROM employee_fortnights ef
+                    LEFT JOIN employees e ON ef.employee_id = e.id
+                    WHERE ef.id = %s
+                """, (record_id,))
+                fortnight = cur.fetchone()
+
+            if not fortnight:
+                logger.warning(f"Employee fortnight {record_id} not found in database")
+                return
+
+            # Format row data
+            # Columns: ID, EmployeeID, EmployeeName, Year, Period, StartDate, EndDate,
+            #          TotalHours, TotalSales, TotalCommissions, BonusCounterCount,
+            #          BonusCounterAmount, TotalSalary, Paid, PaidAt, CreatedAt
+            row_data = [
+                fortnight['id'],
+                fortnight['employee_id'],
+                fortnight['employee_name'] if fortnight['employee_name'] else '',
+                fortnight['year'],
+                fortnight['period'],
+                fortnight['start_date'].strftime('%Y-%m-%d') if fortnight['start_date'] else '',
+                fortnight['end_date'].strftime('%Y-%m-%d') if fortnight['end_date'] else '',
+                float(fortnight['total_hours']) if fortnight['total_hours'] else 0,
+                float(fortnight['total_sales']) if fortnight['total_sales'] else 0,
+                float(fortnight['total_commissions']) if fortnight['total_commissions'] else 0,
+                fortnight['bonus_counter_count'] if fortnight['bonus_counter_count'] else 0,
+                float(fortnight['bonus_counter_amount']) if fortnight['bonus_counter_amount'] else 0,
+                float(fortnight['total_salary']) if fortnight['total_salary'] else 0,
+                'TRUE' if fortnight['paid'] else 'FALSE',
+                fortnight['paid_at'].strftime('%Y-%m-%d %H:%M:%S') if fortnight['paid_at'] else '',
+                fortnight['created_at'].strftime('%Y-%m-%d %H:%M:%S') if fortnight['created_at'] else ''
+            ]
+
+            # Check if row exists
+            try:
+                cell = worksheet.find(str(record_id), in_column=1)
+                if cell:
+                    # Update existing row
+                    worksheet.update(f'A{cell.row}:P{cell.row}', [row_data])
+                    logger.info(f"Updated employee fortnight {record_id} in Google Sheets")
+                else:
+                    # Append new row
+                    worksheet.append_row(row_data)
+                    logger.info(f"Inserted employee fortnight {record_id} to Google Sheets")
+            except gspread.exceptions.CellNotFound:
+                # Append new row
+                worksheet.append_row(row_data)
+                logger.info(f"Inserted employee fortnight {record_id} to Google Sheets")
+
+        except Exception as e:
+            logger.error(f"Failed to sync employee fortnight {record_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+
     def _mark_synced(self, sync_id: int):
         """Mark a sync record as synced.
 
@@ -553,6 +654,8 @@ class PostgresSyncWorker:
                         self._sync_employee_rank(record_id, operation, data)
                     elif table_name == 'employees':
                         self._sync_employee(record_id, operation, data)
+                    elif table_name == 'employee_fortnights':
+                        self._sync_employee_fortnight(record_id, operation, data)
                     else:
                         logger.warning(f"Unknown table: {table_name}")
                         continue

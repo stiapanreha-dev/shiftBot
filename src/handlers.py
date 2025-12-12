@@ -146,7 +146,7 @@ def get_commission_breakdown(
     commission_pct: float,
     shift_id: int = None
 ) -> str:
-    """Calculate commission breakdown (base + dynamic + bonus).
+    """Calculate commission breakdown (tier base + bonus).
 
     Args:
         employee_id: Employee ID.
@@ -161,15 +161,22 @@ def get_commission_breakdown(
     # Ensure commission_pct is float
     commission_pct = float(commission_pct)
 
-    # Get base commission
+    # Get tier info (NEW - uses base_commissions table)
+    tier_name = "Tier C"
+    base_commission = 6.0
     try:
-        settings = sheets.get_employee_settings(employee_id)
-        base_commission = float(settings.get("Sales commission", 8.0))
+        tier = sheets.get_employee_tier(employee_id)
+        if tier:
+            tier_name = tier.get('name', 'Tier C')
+            base_commission = float(tier.get('percentage', 6.0))
     except Exception:
-        base_commission = 8.0
-
-    # Calculate dynamic rate
-    dynamic_rate = commission_pct - base_commission
+        # Fallback to old method if get_employee_tier not available
+        try:
+            settings = sheets.get_employee_settings(employee_id)
+            base_commission = float(settings.get("Sales commission", 6.0))
+            tier_name = f"Base"
+        except Exception:
+            pass
 
     # Get bonus percentage if shift_id provided
     bonus_pct = 0.0
@@ -184,23 +191,13 @@ def get_commission_breakdown(
         except Exception as e:
             logger.error(f"Failed to get bonus breakdown: {e}")
 
-    # Adjust dynamic if we have bonus
-    if bonus_pct > 0:
-        dynamic_rate -= bonus_pct
-
     # Format the breakdown string
-    parts = [f"{base_commission:.1f}% base"]
-
-    if dynamic_rate != 0:
-        if dynamic_rate > 0:
-            parts.append(f"{dynamic_rate:.1f}% dynamic")
-        else:
-            parts.append(f"{dynamic_rate:.1f}% dynamic")
+    parts = [f"{tier_name}: {base_commission:.1f}%"]
 
     if bonus_pct > 0:
-        parts.append(f"{bonus_pct:.1f}% bonus")
+        parts.append(f"+{bonus_pct:.1f}% bonus")
 
-    breakdown = " + ".join(parts)
+    breakdown = " ".join(parts)
     return f"{commission_pct:.2f}% ({breakdown})"
 
 
@@ -218,9 +215,13 @@ def format_shift_totals(shift_data: Dict, employee_id: int, shift_id: int = None
     total_sales = Decimal(str(shift_data.get("Total sales", 0)))
     net_sales = Decimal(str(shift_data.get("Net sales", 0)))
     commission_pct = float(shift_data.get("%", 0))
-    total_per_hour = Decimal(str(shift_data.get("Total per hour", 0)))
+    total_hourly = Decimal(str(shift_data.get("Total hourly", shift_data.get("Total per hour", 0))))
     commissions = Decimal(str(shift_data.get("Commissions", 0)))
     total_made = Decimal(str(shift_data.get("Total made", 0)))
+
+    # Get rolling average and bonus counter (NEW)
+    rolling_average = shift_data.get("rolling_average")
+    bonus_counter = shift_data.get("bonus_counter", False)
 
     # Get commission breakdown with bonus info
     commission_breakdown = get_commission_breakdown(employee_id, commission_pct, shift_id)
@@ -230,10 +231,15 @@ def format_shift_totals(shift_data: Dict, employee_id: int, shift_id: int = None
         f"   • Total sales: ${total_sales:.2f}",
         f"   • Net sales: ${net_sales:.2f}",
         f"   • Commission %: {commission_breakdown}",
-        f"   • Total per hour: ${total_per_hour:.2f}",
+        f"   • Total hourly: ${total_hourly:.2f}",
         f"   • Commissions: ${commissions:.2f}",
         f"   • Earned: ${total_made:.2f}",
     ]
+
+    # Add rolling average and bonus counter info (NEW)
+    if rolling_average is not None:
+        bonus_icon = "✅" if bonus_counter else "❌"
+        lines.append(f"   • Rolling Avg: ${rolling_average:.2f} {bonus_icon}")
 
     return "\n".join(lines)
 

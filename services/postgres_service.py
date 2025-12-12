@@ -19,7 +19,7 @@ Version: 3.1.0
 import logging
 from typing import Dict, List, Optional
 from decimal import Decimal
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import psycopg2
 from psycopg2 import sql, extras
 
@@ -137,7 +137,6 @@ class PostgresService:
                 worked_hours = Decimal(str(shift_data['total_hours']))
             elif clock_in and clock_out:
                 # Parse timestamps and calculate hours
-                from datetime import datetime
                 fmt = "%Y/%m/%d %H:%M:%S"
                 dt_in = datetime.strptime(clock_in, fmt)
                 dt_out = datetime.strptime(clock_out, fmt)
@@ -149,25 +148,29 @@ class PostgresService:
             # Calculate financial fields if not provided
             net_sales = Decimal(str(shift_data.get('net_sales', total_sales * Decimal('0.8'))))
 
-            # Get employee settings for base commission and hourly wage
+            # Normalize shift_date format
+            shift_date_normalized = shift_date.replace("/", "-")
+
+            # Get employee settings and ensure employee exists
             settings = self.get_employee_settings(employee_id)
             if settings is None:
                 # Auto-create employee for new user
                 self._create_employee_from_shift(employee_id, employee_name)
                 settings = self.get_employee_settings(employee_id)
             hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0)))
-            base_commission = Decimal(str(settings.get("Sales commission", 8.0)))
 
-            # Calculate total_per_hour
-            total_per_hour = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
+            # Check and update tier if needed (beginning of month)
+            self._check_and_update_tier(employee_id, shift_date_normalized)
 
-            # Calculate dynamic commission rate
-            # Convert shift_date format from YYYY/MM/DD to YYYY-MM-DD for calculate_dynamic_rate
-            shift_date_normalized = shift_date.replace("/", "-")
-            dynamic_rate = Decimal(str(self.calculate_dynamic_rate(employee_id, shift_date_normalized, float(total_sales))))
+            # Get base commission from tier (NEW LOGIC)
+            tier = self.get_employee_tier(employee_id)
+            base_commission = Decimal(str(tier['percentage'])) if tier else Decimal('6.0')
 
-            # Start with base + dynamic commission
-            commission_pct = base_commission + dynamic_rate
+            # Calculate total_hourly (renamed from total_per_hour)
+            total_hourly = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
+
+            # Start with base commission only (dynamic rate removed)
+            commission_pct = base_commission
             flat_bonuses = Decimal('0')
             applied_bonus_ids = []  # Track applied bonuses to mark them later
 
@@ -196,29 +199,36 @@ class PostgresService:
             commissions = Decimal(str(shift_data.get('commission_amount', net_sales * (commission_pct / Decimal('100')))))
 
             # Calculate total made
-            total_made = Decimal(str(shift_data.get('total_made', commissions + total_per_hour + flat_bonuses)))
+            total_made = Decimal(str(shift_data.get('total_made', commissions + total_hourly + flat_bonuses)))
 
-            # Insert shift
+            # Calculate rolling average and bonus counter (NEW)
+            rolling_average = self.calculate_rolling_average(employee_id, shift_date_normalized)
+            bonus_counter = self.calculate_bonus_counter(total_sales, rolling_average)
+
+            # Insert shift with new fields
             cursor.execute("""
                 INSERT INTO shifts (
                     date, employee_id, employee_name,
                     clock_in, clock_out, worked_hours,
                     total_sales, net_sales, commission_pct,
-                    total_per_hour, commissions, total_made,
+                    total_hourly, commissions, total_made,
+                    rolling_average, bonus_counter,
                     synced_to_sheets
                 ) VALUES (
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
+                    %s, %s,
                     FALSE
                 )
                 RETURNING id
             """, (
-                shift_date, employee_id, employee_name,
+                shift_date_normalized, employee_id, employee_name,
                 clock_in, clock_out, worked_hours,
                 total_sales, net_sales, commission_pct,
-                total_per_hour, commissions, total_made
+                total_hourly, commissions, total_made,
+                rolling_average, bonus_counter
             ))
 
             shift_id = cursor.fetchone()['id']
@@ -248,7 +258,16 @@ class PostgresService:
                         logger.warning(f"Product '{product_name}' not found in database")
 
             conn.commit()
-            logger.info(f"✓ Created shift {shift_id} for employee {employee_id}")
+
+            # Update fortnight totals (NEW)
+            try:
+                shift_dt = datetime.strptime(shift_date_normalized, "%Y-%m-%d").date()
+                fortnight_num = self.get_fortnight_number(shift_dt.day)
+                self.update_fortnight_totals(employee_id, shift_dt.year, shift_dt.month, fortnight_num)
+            except Exception as e:
+                logger.warning(f"Failed to update fortnight totals: {e}")
+
+            logger.info(f"✓ Created shift {shift_id} for employee {employee_id} (tier: {tier['name'] if tier else 'N/A'}, rolling_avg: {rolling_average}, bonus_counter: {bonus_counter})")
             return shift_id
 
         except Exception as e:
@@ -280,6 +299,9 @@ class PostgresService:
                 return None
 
             # Convert to SheetsService format
+            # Handle renamed column: total_hourly (was total_per_hour)
+            total_hourly_val = float(shift.get('total_hourly') or shift.get('total_per_hour') or 0)
+
             result = {
                 'ShiftID': shift['id'],
                 'ID': shift['id'],  # Alias
@@ -304,13 +326,20 @@ class PostgresService:
                 'CommissionPct': float(shift['commission_pct']),
                 'commission_pct': float(shift['commission_pct']),
                 'total_commission_pct': float(shift['commission_pct']),
-                'Total per hour': float(shift['total_per_hour']),
-                'total_per_hour': float(shift['total_per_hour']),
+                'Total per hour': total_hourly_val,  # Keep old name for compatibility
+                'total_per_hour': total_hourly_val,  # Keep old name for compatibility
+                'Total hourly': total_hourly_val,    # New name
+                'total_hourly': total_hourly_val,    # New name
                 'Commissions': float(shift['commissions']),
                 'commissions': float(shift['commissions']),
                 'commission_amount': float(shift['commissions']),
                 'Total made': float(shift['total_made']),
                 'total_made': float(shift['total_made']),
+                # New fields
+                'rolling_average': float(shift['rolling_average']) if shift.get('rolling_average') else None,
+                'Rolling Average': float(shift['rolling_average']) if shift.get('rolling_average') else None,
+                'bonus_counter': bool(shift.get('bonus_counter', False)),
+                'Bonus Counter': bool(shift.get('bonus_counter', False)),
             }
 
             # Get product sales
@@ -377,9 +406,13 @@ class PostgresService:
             'Net sales': 'net_sales',
             '%': 'commission_pct',
             'CommissionPct': 'commission_pct',
-            'Total per hour': 'total_per_hour',
+            'Total per hour': 'total_hourly',  # Renamed
+            'total_per_hour': 'total_hourly',  # Renamed
+            'Total hourly': 'total_hourly',
             'Commissions': 'commissions',
             'Total made': 'total_made',
+            'rolling_average': 'rolling_average',
+            'bonus_counter': 'bonus_counter',
         }
 
         pg_field = field_mapping.get(field, field)
@@ -422,7 +455,7 @@ class PostgresService:
             conn.close()
 
     def recalculate_worked_hours(self, shift_id: int) -> bool:
-        """Recalculate worked_hours, total_per_hour, total_made based on clock_in/clock_out.
+        """Recalculate worked_hours, total_hourly, total_made based on clock_in/clock_out.
 
         Args:
             shift_id: Shift ID
@@ -457,23 +490,23 @@ class PostgresService:
             settings = self.get_employee_settings(employee_id)
             hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0))) if settings else Decimal('15.0')
 
-            # Recalculate total_per_hour = worked_hours * hourly_wage
-            total_per_hour = worked_hours * hourly_wage
+            # Recalculate total_hourly = worked_hours * hourly_wage
+            total_hourly = worked_hours * hourly_wage
 
             # Recalculate total_made
-            total_made = total_per_hour + commissions
+            total_made = total_hourly + commissions
 
             cursor.execute("""
                 UPDATE shifts
                 SET worked_hours = %s,
-                    total_per_hour = %s,
+                    total_hourly = %s,
                     total_made = %s,
                     updated_at = now()
                 WHERE id = %s
-            """, (worked_hours, total_per_hour, total_made, shift_id))
+            """, (worked_hours, total_hourly, total_made, shift_id))
 
             conn.commit()
-            logger.info(f"✓ Recalculated shift {shift_id}: {worked_hours}h, ${total_per_hour}/h, total=${total_made}")
+            logger.info(f"✓ Recalculated shift {shift_id}: {worked_hours}h, ${total_hourly}/h, total=${total_made}")
 
             if self.cache_manager:
                 self.cache_manager.invalidate_key('shift', shift_id)
@@ -502,8 +535,8 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            # Get shift data including employee_id
-            cursor.execute("SELECT commission_pct, worked_hours, employee_id FROM shifts WHERE id = %s", (shift_id,))
+            # Get shift data including employee_id and date
+            cursor.execute("SELECT commission_pct, worked_hours, employee_id, date FROM shifts WHERE id = %s", (shift_id,))
             shift = cursor.fetchone()
 
             if not shift:
@@ -512,6 +545,7 @@ class PostgresService:
             commission_pct = shift['commission_pct']
             worked_hours = shift['worked_hours'] or Decimal('1')
             employee_id = shift['employee_id']
+            shift_date = shift['date']
 
             # Get hourly_wage from employee settings
             settings = self.get_employee_settings(employee_id)
@@ -520,8 +554,13 @@ class PostgresService:
             # Recalculate
             net_sales = total_sales * Decimal('0.8')
             commissions = net_sales * commission_pct / 100
-            total_per_hour = worked_hours * hourly_wage
-            total_made = total_per_hour + commissions
+            total_hourly = worked_hours * hourly_wage
+            total_made = total_hourly + commissions
+
+            # Recalculate rolling_average and bonus_counter
+            shift_date_str = str(shift_date)
+            rolling_average = self.calculate_rolling_average(employee_id, shift_date_str)
+            bonus_counter = self.calculate_bonus_counter(total_sales, rolling_average)
 
             # Update shift
             cursor.execute("""
@@ -529,14 +568,23 @@ class PostgresService:
                 SET total_sales = %s,
                     net_sales = %s,
                     commissions = %s,
-                    total_per_hour = %s,
+                    total_hourly = %s,
                     total_made = %s,
+                    rolling_average = %s,
+                    bonus_counter = %s,
                     updated_at = now()
                 WHERE id = %s
-            """, (total_sales, net_sales, commissions, total_per_hour, total_made, shift_id))
+            """, (total_sales, net_sales, commissions, total_hourly, total_made, rolling_average, bonus_counter, shift_id))
 
             conn.commit()
             logger.info(f"✓ Updated total_sales for shift {shift_id}: {total_sales}")
+
+            # Update fortnight totals
+            try:
+                fortnight_num = self.get_fortnight_number(shift_date.day)
+                self.update_fortnight_totals(employee_id, shift_date.year, shift_date.month, fortnight_num)
+            except Exception as e:
+                logger.warning(f"Failed to update fortnight totals: {e}")
 
             # Invalidate cache
             if self.cache_manager:
@@ -1487,6 +1535,570 @@ class PostgresService:
                     result.append(shift)
 
             return result
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ========== Base Commissions (Tiers) ==========
+
+    def get_base_commissions(self) -> List[Dict]:
+        """Get all commission tiers.
+
+        Returns:
+            List of tier dicts
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT * FROM base_commissions
+                WHERE is_active = TRUE
+                ORDER BY display_order ASC
+            """)
+
+            tiers = cursor.fetchall()
+            return [dict(t) for t in tiers]
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_employee_tier(self, employee_id: int) -> Optional[Dict]:
+        """Get current tier for employee.
+
+        Args:
+            employee_id: Employee ID
+
+        Returns:
+            Tier dict with id, name, percentage or None
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT bc.id, bc.name, bc.percentage, bc.min_amount, bc.max_amount
+                FROM employees e
+                JOIN base_commissions bc ON e.base_commission_id = bc.id
+                WHERE e.telegram_id = %s AND e.is_active = TRUE
+            """, (employee_id,))
+
+            tier = cursor.fetchone()
+            if tier:
+                return dict(tier)
+
+            # Default to Tier C if no tier assigned
+            cursor.execute("""
+                SELECT id, name, percentage, min_amount, max_amount
+                FROM base_commissions
+                WHERE name = 'Tier C' AND is_active = TRUE
+                LIMIT 1
+            """)
+            default_tier = cursor.fetchone()
+            return dict(default_tier) if default_tier else None
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def calculate_employee_tier(self, employee_id: int, year: int, month: int) -> int:
+        """Calculate tier based on PREVIOUS month's total sales.
+
+        Args:
+            employee_id: Employee ID
+            year: Year to check
+            month: Month to check (tier is based on previous month)
+
+        Returns:
+            base_commission_id for the tier
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Calculate previous month
+            if month == 1:
+                prev_year = year - 1
+                prev_month = 12
+            else:
+                prev_year = year
+                prev_month = month - 1
+
+            # Get total sales for previous month
+            cursor.execute("""
+                SELECT COALESCE(SUM(total_sales), 0) as total
+                FROM shifts
+                WHERE employee_id = %s
+                  AND EXTRACT(YEAR FROM date) = %s
+                  AND EXTRACT(MONTH FROM date) = %s
+            """, (employee_id, prev_year, prev_month))
+
+            result = cursor.fetchone()
+            total_sales = float(result['total']) if result else 0.0
+
+            # Find matching tier
+            cursor.execute("""
+                SELECT id FROM base_commissions
+                WHERE is_active = TRUE
+                  AND %s >= min_amount
+                  AND %s <= max_amount
+                ORDER BY display_order
+                LIMIT 1
+            """, (total_sales, total_sales))
+
+            tier = cursor.fetchone()
+            if tier:
+                return tier['id']
+
+            # Default to Tier C
+            cursor.execute("SELECT id FROM base_commissions WHERE name = 'Tier C' LIMIT 1")
+            default = cursor.fetchone()
+            return default['id'] if default else 3
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def update_employee_tier(self, employee_id: int, year: int = None, month: int = None) -> Dict:
+        """Update employee's tier based on previous month sales.
+
+        Args:
+            employee_id: Employee ID
+            year: Year (default: current)
+            month: Month (default: current)
+
+        Returns:
+            Dict with old_tier, new_tier, changed
+        """
+        if year is None or month is None:
+            today = date.today()
+            year = today.year
+            month = today.month
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Get current tier
+            cursor.execute("""
+                SELECT base_commission_id FROM employees
+                WHERE telegram_id = %s
+            """, (employee_id,))
+            current = cursor.fetchone()
+            old_tier_id = current['base_commission_id'] if current else None
+
+            # Calculate new tier
+            new_tier_id = self.calculate_employee_tier(employee_id, year, month)
+
+            # Update if changed
+            if old_tier_id != new_tier_id:
+                cursor.execute("""
+                    UPDATE employees
+                    SET base_commission_id = %s,
+                        last_tier_update = %s,
+                        updated_at = now()
+                    WHERE telegram_id = %s
+                """, (new_tier_id, date.today(), employee_id))
+                conn.commit()
+                logger.info(f"Updated tier for employee {employee_id}: {old_tier_id} -> {new_tier_id}")
+
+            # Get tier names for return
+            old_tier_name = None
+            new_tier_name = None
+
+            if old_tier_id:
+                cursor.execute("SELECT name FROM base_commissions WHERE id = %s", (old_tier_id,))
+                r = cursor.fetchone()
+                old_tier_name = r['name'] if r else None
+
+            cursor.execute("SELECT name FROM base_commissions WHERE id = %s", (new_tier_id,))
+            r = cursor.fetchone()
+            new_tier_name = r['name'] if r else None
+
+            return {
+                'old_tier_id': old_tier_id,
+                'new_tier_id': new_tier_id,
+                'old_tier': old_tier_name,
+                'new_tier': new_tier_name,
+                'changed': old_tier_id != new_tier_id
+            }
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _check_and_update_tier(self, employee_id: int, shift_date: str) -> None:
+        """Check if tier needs update (beginning of month) and update if needed.
+
+        Args:
+            employee_id: Employee ID
+            shift_date: Shift date string (YYYY-MM-DD or YYYY/MM/DD)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Parse shift date
+            shift_date_clean = shift_date.replace("/", "-")
+            shift_dt = datetime.strptime(shift_date_clean, "%Y-%m-%d").date()
+
+            # Check last tier update
+            cursor.execute("""
+                SELECT last_tier_update FROM employees
+                WHERE telegram_id = %s
+            """, (employee_id,))
+            result = cursor.fetchone()
+
+            last_update = result['last_tier_update'] if result else None
+
+            # Update if: no previous update, or last update was in a different month
+            should_update = (
+                last_update is None or
+                last_update.year != shift_dt.year or
+                last_update.month != shift_dt.month
+            )
+
+            if should_update:
+                self.update_employee_tier(employee_id, shift_dt.year, shift_dt.month)
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ========== Rolling Average & Bonus Counter ==========
+
+    def calculate_rolling_average(self, employee_id: int, shift_date: str) -> Decimal:
+        """Calculate weighted rolling average of total_sales for last 7 calendar days.
+
+        Formula: Σ(i / Σ(1..N)) × total_sales_i = Σ(i × sales_i) / Σ(1..N)
+        where i = position (1 = oldest, N = newest)
+
+        Special cases:
+        - 0 shifts in last 7 days → rolling_average = 0 (bonus_counter will be FALSE)
+        - 0 < N < 7 shifts → use formula with available shifts
+
+        Args:
+            employee_id: Employee ID
+            shift_date: Shift date (YYYY-MM-DD or YYYY/MM/DD)
+
+        Returns:
+            Weighted average (0 if no shifts in last 7 days)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Parse shift date
+            shift_date_clean = shift_date.replace("/", "-")
+
+            # Get shifts from last 7 calendar days (excluding current date)
+            cursor.execute("""
+                SELECT total_sales
+                FROM shifts
+                WHERE employee_id = %s
+                  AND date >= %s::date - INTERVAL '7 days'
+                  AND date < %s::date
+                  AND total_sales IS NOT NULL
+                ORDER BY date ASC, clock_in ASC
+            """, (employee_id, shift_date_clean, shift_date_clean))
+
+            shifts = cursor.fetchall()
+
+            # If no shifts in last 7 days, return 0 (not None)
+            # This ensures bonus_counter = FALSE for inactive employees
+            if not shifts:
+                return Decimal('0')
+
+            # Calculate weighted average
+            # Formula: Σ(i × sales_i) / Σ(1..N) where N = number of shifts
+            n = len(shifts)
+            sum_of_weights = Decimal(str(n * (n + 1) // 2))  # 1 + 2 + ... + N
+
+            total_weighted = Decimal('0')
+            for i, shift in enumerate(shifts, start=1):
+                weight = Decimal(str(i))
+                sales = Decimal(str(shift['total_sales']))
+                total_weighted += weight * sales
+
+            rolling_avg = total_weighted / sum_of_weights
+            return rolling_avg.quantize(Decimal('0.01'))
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def calculate_bonus_counter(self, total_sales: Decimal, rolling_average: Optional[Decimal]) -> bool:
+        """Determine if bonus_counter should be True.
+
+        Args:
+            total_sales: Current shift total sales
+            rolling_average: Calculated rolling average (can be None)
+
+        Returns:
+            True if total_sales >= rolling_average, False otherwise
+        """
+        if rolling_average is None:
+            return False
+
+        return Decimal(str(total_sales)) >= rolling_average
+
+    # ========== Fortnights ==========
+
+    def get_fortnight_number(self, day: int) -> int:
+        """Get fortnight number from day of month.
+
+        Args:
+            day: Day of month (1-31)
+
+        Returns:
+            1 for days 1-15, 2 for days 16-31
+        """
+        return 1 if day <= 15 else 2
+
+    def get_fortnight_payment_date(self, year: int, month: int, fortnight: int) -> date:
+        """Get payment date for a fortnight.
+
+        Args:
+            year: Year
+            month: Month
+            fortnight: Fortnight number (1 or 2)
+
+        Returns:
+            Payment date
+        """
+        if fortnight == 1:
+            # F1 (days 1-15): payment on 16th of same month
+            return date(year, month, 16)
+        else:
+            # F2 (days 16-31): payment on 1st of next month
+            if month == 12:
+                return date(year + 1, 1, 1)
+            else:
+                return date(year, month + 1, 1)
+
+    def get_or_create_fortnight(self, employee_id: int, year: int, month: int, fortnight: int) -> Dict:
+        """Get or create fortnight record for employee.
+
+        Args:
+            employee_id: Employee ID
+            year: Year
+            month: Month
+            fortnight: Fortnight number (1 or 2)
+
+        Returns:
+            Fortnight record dict
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Try to get existing
+            cursor.execute("""
+                SELECT * FROM employee_fortnights
+                WHERE employee_id = %s AND year = %s AND month = %s AND fortnight = %s
+            """, (employee_id, year, month, fortnight))
+
+            record = cursor.fetchone()
+            if record:
+                return dict(record)
+
+            # Create new record
+            payment_date = self.get_fortnight_payment_date(year, month, fortnight)
+
+            cursor.execute("""
+                INSERT INTO employee_fortnights (
+                    employee_id, year, month, fortnight, payment_date
+                ) VALUES (%s, %s, %s, %s, %s)
+                RETURNING *
+            """, (employee_id, year, month, fortnight, payment_date))
+
+            new_record = cursor.fetchone()
+            conn.commit()
+
+            logger.info(f"Created fortnight record: employee={employee_id}, {year}-{month:02d} F{fortnight}")
+            return dict(new_record)
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def update_fortnight_totals(self, employee_id: int, year: int, month: int, fortnight: int) -> Dict:
+        """Recalculate fortnight totals from shifts.
+
+        Args:
+            employee_id: Employee ID
+            year: Year
+            month: Month
+            fortnight: Fortnight number (1 or 2)
+
+        Returns:
+            Updated fortnight record
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Determine date range for fortnight
+            if fortnight == 1:
+                start_day, end_day = 1, 15
+            else:
+                start_day, end_day = 16, 31
+
+            start_date = date(year, month, start_day)
+            # Handle end of month
+            if fortnight == 2:
+                # Last day of month
+                if month == 12:
+                    end_date = date(year + 1, 1, 1) - timedelta(days=1)
+                else:
+                    end_date = date(year, month + 1, 1) - timedelta(days=1)
+            else:
+                end_date = date(year, month, end_day)
+
+            # Aggregate shift data
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total_shifts,
+                    COALESCE(SUM(worked_hours), 0) as total_worked_hours,
+                    COALESCE(SUM(total_sales), 0) as total_sales,
+                    COALESCE(SUM(commissions), 0) as total_commissions,
+                    COALESCE(SUM(total_hourly), 0) as total_hourly_pay,
+                    COALESCE(SUM(total_made), 0) as total_made,
+                    COUNT(*) FILTER (WHERE bonus_counter = TRUE) as bonus_counter_true_count
+                FROM shifts
+                WHERE employee_id = %s
+                  AND date >= %s
+                  AND date <= %s
+            """, (employee_id, start_date, end_date))
+
+            stats = cursor.fetchone()
+
+            # Get bonus percentage setting
+            cursor.execute("""
+                SELECT setting_value FROM bonus_settings
+                WHERE setting_key = 'bonus_counter_percentage' AND is_active = TRUE
+            """)
+            bonus_setting = cursor.fetchone()
+            bonus_pct = Decimal(str(bonus_setting['setting_value'])) if bonus_setting else Decimal('0.01')
+
+            # Calculate bonus amount
+            bonus_count = stats['bonus_counter_true_count'] or 0
+            total_commissions = Decimal(str(stats['total_commissions']))
+            bonus_amount = bonus_count * total_commissions * bonus_pct
+
+            # Calculate total salary
+            total_made = Decimal(str(stats['total_made']))
+            total_salary = total_made + bonus_amount
+
+            # Update fortnight record
+            payment_date = self.get_fortnight_payment_date(year, month, fortnight)
+
+            cursor.execute("""
+                INSERT INTO employee_fortnights (
+                    employee_id, year, month, fortnight,
+                    total_shifts, total_worked_hours, total_sales,
+                    total_commissions, total_hourly_pay, total_made,
+                    bonus_counter_true_count, bonus_amount, total_salary,
+                    payment_date
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s
+                )
+                ON CONFLICT (employee_id, year, month, fortnight) DO UPDATE SET
+                    total_shifts = EXCLUDED.total_shifts,
+                    total_worked_hours = EXCLUDED.total_worked_hours,
+                    total_sales = EXCLUDED.total_sales,
+                    total_commissions = EXCLUDED.total_commissions,
+                    total_hourly_pay = EXCLUDED.total_hourly_pay,
+                    total_made = EXCLUDED.total_made,
+                    bonus_counter_true_count = EXCLUDED.bonus_counter_true_count,
+                    bonus_amount = EXCLUDED.bonus_amount,
+                    total_salary = EXCLUDED.total_salary,
+                    updated_at = now()
+                RETURNING *
+            """, (
+                employee_id, year, month, fortnight,
+                stats['total_shifts'], stats['total_worked_hours'], stats['total_sales'],
+                stats['total_commissions'], stats['total_hourly_pay'], stats['total_made'],
+                bonus_count, bonus_amount, total_salary,
+                payment_date
+            ))
+
+            updated = cursor.fetchone()
+            conn.commit()
+
+            logger.info(f"Updated fortnight totals: employee={employee_id}, {year}-{month:02d} F{fortnight}, salary=${total_salary:.2f}")
+            return dict(updated)
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_employee_fortnights(self, employee_id: int, year: int = None, month: int = None) -> List[Dict]:
+        """Get fortnight history for employee.
+
+        Args:
+            employee_id: Employee ID
+            year: Optional year filter
+            month: Optional month filter
+
+        Returns:
+            List of fortnight records
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            if year and month:
+                cursor.execute("""
+                    SELECT * FROM employee_fortnights
+                    WHERE employee_id = %s AND year = %s AND month = %s
+                    ORDER BY fortnight
+                """, (employee_id, year, month))
+            elif year:
+                cursor.execute("""
+                    SELECT * FROM employee_fortnights
+                    WHERE employee_id = %s AND year = %s
+                    ORDER BY month, fortnight
+                """, (employee_id, year))
+            else:
+                cursor.execute("""
+                    SELECT * FROM employee_fortnights
+                    WHERE employee_id = %s
+                    ORDER BY year DESC, month DESC, fortnight DESC
+                """, (employee_id,))
+
+            return [dict(r) for r in cursor.fetchall()]
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_bonus_setting(self, key: str) -> Optional[Decimal]:
+        """Get bonus setting value.
+
+        Args:
+            key: Setting key
+
+        Returns:
+            Setting value or None
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT setting_value FROM bonus_settings
+                WHERE setting_key = %s AND is_active = TRUE
+            """, (key,))
+
+            result = cursor.fetchone()
+            return Decimal(str(result['setting_value'])) if result else None
 
         finally:
             cursor.close()
