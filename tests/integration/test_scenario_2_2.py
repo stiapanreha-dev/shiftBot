@@ -45,13 +45,13 @@ import asyncio
 from telegram import Update, User, Message, CallbackQuery, Chat
 from telegram.ext import ContextTypes, ConversationHandler
 
-from handlers import (
+from src.handlers import (
     start, handle_callback_query, handle_amount_input
 )
 from config import Config, START, CHOOSE_DATE_IN, CHOOSE_TIME_IN, CHOOSE_TIME_OUT
 from config import PICK_PRODUCT, ENTER_AMOUNT, ADD_OR_FINISH
-from sheets_service import SheetsService
-from time_utils import now_et, format_dt, get_server_date
+from services.postgres_service import PostgresService
+from src.time_utils import now_et, format_dt, get_server_date
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

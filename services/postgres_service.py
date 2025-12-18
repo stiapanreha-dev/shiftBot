@@ -24,8 +24,13 @@ import psycopg2
 from psycopg2 import sql, extras
 
 from config import Config
+from services.calculators import CommissionCalculator
+from services.formatters import DateFormatter
 
 logger = logging.getLogger(__name__)
+
+# Singleton calculator instance
+_commission_calculator = CommissionCalculator()
 
 
 def get_db_connection(**params):
@@ -149,7 +154,7 @@ class PostgresService:
             net_sales = Decimal(str(shift_data.get('net_sales', total_sales * Decimal('0.8'))))
 
             # Normalize shift_date format
-            shift_date_normalized = shift_date.replace("/", "-")
+            shift_date_normalized = DateFormatter.to_db_date(shift_date)
 
             # Get employee settings and ensure employee exists
             settings = self.get_employee_settings(employee_id)
@@ -162,44 +167,27 @@ class PostgresService:
             # Check and update tier if needed (beginning of month)
             self._check_and_update_tier(employee_id, shift_date_normalized)
 
-            # Get base commission from tier (NEW LOGIC)
+            # Get tier and bonuses for calculation
             tier = self.get_employee_tier(employee_id)
-            base_commission = Decimal(str(tier['percentage'])) if tier else Decimal('6.0')
+            active_bonuses = self.get_active_bonuses(employee_id) if clock_out else []
 
-            # Calculate total_hourly (renamed from total_per_hour)
+            # Use CommissionCalculator for all commission logic
+            calc_result = _commission_calculator.calculate(
+                total_sales=total_sales,
+                worked_hours=worked_hours,
+                hourly_wage=hourly_wage,
+                tier=tier,
+                active_bonuses=active_bonuses,
+                apply_bonuses=bool(clock_out)
+            )
+
+            # Extract values from calculator result
+            commission_pct = calc_result.commission_pct
+            flat_bonuses = calc_result.flat_bonuses
+            applied_bonus_ids = calc_result.applied_bonus_ids
             total_hourly = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
-
-            # Start with base commission only (dynamic rate removed)
-            commission_pct = base_commission
-            flat_bonuses = Decimal('0')
-            applied_bonus_ids = []  # Track applied bonuses to mark them later
-
-            # Apply active bonuses if shift is complete (has clock_out)
-            if clock_out:
-                active_bonuses = self.get_active_bonuses(employee_id)
-                for bonus in active_bonuses:
-                    bonus_id = bonus.get("ID")
-                    bonus_type = bonus.get("Bonus Type", "")
-                    bonus_value = Decimal(str(bonus.get("Value", 0)))
-
-                    if bonus_type == "percent_next":
-                        commission_pct += bonus_value
-                        applied_bonus_ids.append(bonus_id)
-                        logger.info(f"Applied percent_next bonus {bonus_id}: +{bonus_value}%")
-                    elif bonus_type == "double_commission":
-                        commission_pct *= Decimal("2")
-                        applied_bonus_ids.append(bonus_id)
-                        logger.info(f"Applied double_commission bonus {bonus_id}: commission doubled")
-                    elif bonus_type in ["flat", "flat_immediate"]:
-                        flat_bonuses += bonus_value
-                        applied_bonus_ids.append(bonus_id)
-                        logger.info(f"Applied flat bonus {bonus_id}: +${bonus_value}")
-
-            # Calculate commissions from net sales
-            commissions = Decimal(str(shift_data.get('commission_amount', net_sales * (commission_pct / Decimal('100')))))
-
-            # Calculate total made
-            total_made = Decimal(str(shift_data.get('total_made', commissions + total_hourly + flat_bonuses)))
+            commissions = Decimal(str(shift_data.get('commission_amount', calc_result.commissions)))
+            total_made = Decimal(str(shift_data.get('total_made', calc_result.total_made)))
 
             # Calculate rolling average and bonus counter (NEW)
             rolling_average = self.calculate_rolling_average(employee_id, shift_date_normalized)
@@ -421,7 +409,7 @@ class PostgresService:
             # Special handling for time fields
             if pg_field in ['clock_in', 'clock_out']:
                 # Value comes as 'YYYY/MM/DD HH:MM:SS' - convert to PostgreSQL format
-                full_datetime = value.replace("/", "-")
+                full_datetime = DateFormatter.to_db_datetime(value)
 
                 cursor.execute(
                     sql.SQL("UPDATE shifts SET {} = %s, updated_at = now() WHERE id = %s").format(
@@ -551,11 +539,18 @@ class PostgresService:
             settings = self.get_employee_settings(employee_id)
             hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0))) if settings else Decimal('15.0')
 
-            # Recalculate
-            net_sales = total_sales * Decimal('0.8')
-            commissions = net_sales * commission_pct / 100
+            # Use CommissionCalculator for recalculation
+            calc_result = _commission_calculator.recalculate_from_existing(
+                total_sales=total_sales,
+                worked_hours=worked_hours,
+                hourly_wage=hourly_wage,
+                existing_commission_pct=commission_pct
+            )
+
+            net_sales = _commission_calculator.calculate_net_sales(total_sales)
+            commissions = calc_result.commissions
             total_hourly = worked_hours * hourly_wage
-            total_made = total_hourly + commissions
+            total_made = calc_result.total_made
 
             # Recalculate rolling_average and bonus_counter
             shift_date_str = str(shift_date)
@@ -1741,8 +1736,7 @@ class PostgresService:
 
         try:
             # Parse shift date
-            shift_date_clean = shift_date.replace("/", "-")
-            shift_dt = datetime.strptime(shift_date_clean, "%Y-%m-%d").date()
+            shift_dt = DateFormatter.parse_date(shift_date)
 
             # Check last tier update
             cursor.execute("""
@@ -1791,7 +1785,7 @@ class PostgresService:
 
         try:
             # Parse shift date
-            shift_date_clean = shift_date.replace("/", "-")
+            shift_date_clean = DateFormatter.to_db_date(shift_date)
 
             # Get shifts from last 7 calendar days (excluding current date)
             cursor.execute("""
@@ -1843,6 +1837,119 @@ class PostgresService:
             return False
 
         return Decimal(str(total_sales)) >= rolling_average
+
+    def calculate_tomorrow_target(self, employee_id: int, today_date: str) -> Decimal:
+        """Calculate rolling average target for tomorrow (including today's shift).
+
+        This calculates what the rolling_average will be tomorrow, so the employee
+        knows what target they need to hit.
+
+        Args:
+            employee_id: Employee ID
+            today_date: Today's date (YYYY-MM-DD or YYYY/MM/DD)
+
+        Returns:
+            Target amount for tomorrow (rolling_average including today)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Parse date
+            today_clean = DateFormatter.to_db_date(today_date)
+
+            # Get shifts from last 7 days INCLUDING today
+            # Tomorrow's rolling_average = shifts from (today - 6 days) to today
+            cursor.execute("""
+                SELECT total_sales
+                FROM shifts
+                WHERE employee_id = %s
+                  AND date >= %s::date - INTERVAL '6 days'
+                  AND date <= %s::date
+                  AND total_sales IS NOT NULL
+                ORDER BY date ASC, clock_in ASC
+            """, (employee_id, today_clean, today_clean))
+
+            shifts = cursor.fetchall()
+
+            if not shifts:
+                return Decimal('0')
+
+            # Calculate weighted average
+            n = len(shifts)
+            sum_of_weights = Decimal(str(n * (n + 1) // 2))
+
+            total_weighted = Decimal('0')
+            for i, shift in enumerate(shifts, start=1):
+                weight = Decimal(str(i))
+                sales = Decimal(str(shift['total_sales']))
+                total_weighted += weight * sales
+
+            target = total_weighted / sum_of_weights
+            return target.quantize(Decimal('0.01'))
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_fortnight_bonus_count(self, employee_id: int, year: int = None, month: int = None, fortnight: int = None) -> int:
+        """Get count of bonus_counter=TRUE for current fortnight.
+
+        Args:
+            employee_id: Employee ID
+            year: Year (default: current)
+            month: Month (default: current)
+            fortnight: Fortnight number (default: current)
+
+        Returns:
+            Count of shifts with bonus_counter=TRUE in the fortnight
+        """
+        from datetime import date as date_class
+
+        if year is None or month is None or fortnight is None:
+            today = date_class.today()
+            year = today.year
+            month = today.month
+            fortnight = self.get_fortnight_number(today.day)
+
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Define fortnight date range
+            if fortnight == 1:
+                start_day, end_day = 1, 15
+            else:
+                start_day = 16
+                # Last day of month
+                if month in [1, 3, 5, 7, 8, 10, 12]:
+                    end_day = 31
+                elif month in [4, 6, 9, 11]:
+                    end_day = 30
+                elif month == 2:
+                    # Check leap year
+                    if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                        end_day = 29
+                    else:
+                        end_day = 28
+
+            cursor.execute("""
+                SELECT COUNT(*) as bonus_count
+                FROM shifts
+                WHERE employee_id = %s
+                  AND EXTRACT(YEAR FROM date) = %s
+                  AND EXTRACT(MONTH FROM date) = %s
+                  AND EXTRACT(DAY FROM date) >= %s
+                  AND EXTRACT(DAY FROM date) <= %s
+                  AND bonus_counter = TRUE
+            """, (employee_id, year, month, start_day, end_day))
+
+            result = cursor.fetchone()
+            return result['bonus_count'] if result else 0
+
+        finally:
+            cursor.close()
+            conn.close()
 
     # ========== Fortnights ==========
 

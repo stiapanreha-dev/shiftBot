@@ -19,6 +19,8 @@ from src.time_utils import (
 )
 from services.singleton import sheets_service  # Use singleton instance with caching
 from services.rank_service import RankService
+from services.calculators import CommissionCalculator
+from services.formatters import DateFormatter
 from src.keyboards import (
     date_choice_keyboard, date_choice_edit_keyboard, time_keyboard,
     products_keyboard, add_or_finish_keyboard, start_menu_keyboard,
@@ -148,6 +150,8 @@ def get_commission_breakdown(
 ) -> str:
     """Calculate commission breakdown (tier base + bonus).
 
+    Uses CommissionCalculator for consistent breakdown formatting.
+
     Args:
         employee_id: Employee ID.
         commission_pct: Total commission percentage (can be float or string).
@@ -157,24 +161,21 @@ def get_commission_breakdown(
         Formatted commission breakdown string.
     """
     sheets = sheets_service
-
-    # Ensure commission_pct is float
     commission_pct = float(commission_pct)
 
-    # Get tier info (NEW - uses base_commissions table)
-    tier_name = "Tier C"
-    base_commission = 6.0
+    # Get tier info
+    tier_name = CommissionCalculator.DEFAULT_TIER_NAME
+    base_commission = float(CommissionCalculator.DEFAULT_BASE_COMMISSION)
     try:
         tier = sheets.get_employee_tier(employee_id)
         if tier:
-            tier_name = tier.get('name', 'Tier C')
-            base_commission = float(tier.get('percentage', 6.0))
+            tier_name = tier.get('name', tier_name)
+            base_commission = float(tier.get('percentage', base_commission))
     except Exception:
-        # Fallback to old method if get_employee_tier not available
         try:
             settings = sheets.get_employee_settings(employee_id)
-            base_commission = float(settings.get("Sales commission", 6.0))
-            tier_name = f"Base"
+            base_commission = float(settings.get("Sales commission", base_commission))
+            tier_name = "Base"
         except Exception:
             pass
 
@@ -183,17 +184,14 @@ def get_commission_breakdown(
     if shift_id:
         try:
             applied_bonuses = sheets.get_shift_applied_bonuses(shift_id)
-
-            # Sum percent_next bonuses
             for bonus in applied_bonuses:
                 if bonus.get("Bonus Type") == "percent_next":
                     bonus_pct += float(bonus.get("Value", 0))
         except Exception as e:
             logger.error(f"Failed to get bonus breakdown: {e}")
 
-    # Format the breakdown string
+    # Format breakdown string (same format as CommissionResult.get_breakdown_string)
     parts = [f"{tier_name}: {base_commission:.1f}%"]
-
     if bonus_pct > 0:
         parts.append(f"+{bonus_pct:.1f}% bonus")
 
@@ -378,7 +376,7 @@ def build_summary(shift_data: Dict, shift_id: int, created_shift: Dict = None) -
                     current_rank = sheets.determine_rank(employee_id, year, month)
 
                 # Get rank emoji
-                from rank_service import RankService
+                from services.rank_service import RankService
                 rank_service = RankService(sheets)
                 rank_emoji = rank_service._get_rank_emoji(current_rank)
 
@@ -809,12 +807,10 @@ async def check_and_notify_rank(
             # Parse shift date to get year and month
             shift_date_str = shift.get('date') or shift.get('shift_date') or shift.get('Date')
             if shift_date_str:
-                # Handle both datetime and date formats
-                date_part = str(shift_date_str).split()[0]  # "2025-11-30 00:00:00" -> "2025-11-30"
-                date_part = date_part.replace("/", "-")  # Normalize format
-                parts = date_part.split("-")
-                year = int(parts[0])
-                month = int(parts[1])
+                # Parse date using DateFormatter for consistent handling
+                parsed_date = DateFormatter.parse_date(str(shift_date_str))
+                year = parsed_date.year
+                month = parsed_date.month
             else:
                 # Fallback to current date
                 now = now_et()
@@ -916,6 +912,21 @@ async def handle_finish_shift(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"Products: {products_str} | "
             f"Total: {total_sales}"
         )
+
+        # Send tomorrow's target notification
+        try:
+            shift_date = shift_data['date']
+            tomorrow_target = sheets.calculate_tomorrow_target(user.id, shift_date)
+            bonus_count = sheets.get_fortnight_bonus_count(user.id)
+
+            target_msg = (
+                f"\n🎯 Your target for tomorrow is: ${tomorrow_target:,.0f}\n\n"
+                f"Hit it and you earn +1% salary boost! Keep grinding 💪\n\n"
+                f"Current bonus: +{bonus_count}% ✨"
+            )
+            await query.message.reply_text(target_msg)
+        except Exception as e:
+            logger.warning(f"Failed to send target notification: {e}")
 
         # Check and notify rank changes
         await check_and_notify_rank(user.id, shift_id, context, query.message)
@@ -1441,43 +1452,69 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         logger.debug(f"Failed to parse date {record_date}: {e}")
                         pass
 
-        # Calculate total made since last pay day
-        # Pay days are 1st and 15th of each month
-        if now.day < 15:
-            # Last pay day was 1st of current month
-            pay_day_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            next_pay_day = now.replace(day=15)
+        # Determine current fortnight and pay day
+        # Pay days are 16th (for fortnight 1) and 1st of next month (for fortnight 2)
+        if now.day <= 15:
+            current_fortnight = 1
+            next_pay_day = now.replace(day=16)
         else:
-            # Last pay day was 15th of current month
-            pay_day_start = now.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+            current_fortnight = 2
             # Next pay day is 1st of next month
             if month == 12:
                 next_pay_day = now.replace(year=year+1, month=1, day=1)
             else:
                 next_pay_day = now.replace(month=month+1, day=1)
 
+        # Get fortnight data for bonus calculation
+        fortnight_data = None
+        bonus_count = 0
+        bonus_amount = Decimal("0")
+        total_salary = Decimal("0")
+
+        try:
+            fortnights = sheets.get_employee_fortnights(user.id, year, month)
+            for f in fortnights:
+                if f.get('fortnight') == current_fortnight:
+                    fortnight_data = f
+                    bonus_count = f.get('bonus_counter_true_count', 0) or 0
+                    bonus_amount = Decimal(str(f.get('bonus_amount', 0) or 0))
+                    total_salary = Decimal(str(f.get('total_salary', 0) or 0))
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to get fortnight data: {e}")
+
+        # Calculate total made since last pay day (from shifts in current fortnight)
         total_made_since_payday = Decimal("0")
+        if current_fortnight == 1:
+            start_day = 1
+            end_day = 15
+        else:
+            start_day = 16
+            end_day = 31
+
         for record in all_records:
             if str(record.get("EmployeeId")) == str(user.id):
                 record_date = record.get("Date", "")
                 if record_date:
                     try:
-                        # Convert PostgreSQL format (YYYY-MM-DD) to expected format (YYYY/MM/DD)
                         date_str = str(record_date).replace("-", "/")
                         dt = parse_dt(date_str)
-                        if dt >= pay_day_start:
+                        if dt.year == year and dt.month == month and start_day <= dt.day <= end_day:
                             made = record.get("Total made", 0)
                             if made:
                                 total_made_since_payday += Decimal(str(made))
                     except Exception as e:
                         logger.debug(f"Failed to parse date {record_date}: {e}")
-                        pass
+
+        # Total with bonus
+        total_with_bonus = total_made_since_payday + bonus_amount
 
         # Format message
         message = f"📊 Your Statistics\n\n"
         message += f"🏆 Rank: {current_rank} {rank_emoji}\n"
         message += f"💰 Total sales this month: ${total_sales_month:.2f}\n"
-        message += f"💵 Total made since last pay day: ${total_made_since_payday:.2f}\n"
+        message += f"💵 Total made since last pay day: ${total_with_bonus:.2f}\n"
+        message += f"✨ Current applied bonus: +{bonus_count}% (${bonus_amount:.2f})\n"
         message += f"📅 Next pay day: {next_pay_day.strftime('%B %d, %Y')}\n\n"
         message += "Keep it up! 🚀"
 

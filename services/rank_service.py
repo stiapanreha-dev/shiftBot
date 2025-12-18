@@ -2,11 +2,13 @@
 
 import logging
 import random
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, TYPE_CHECKING
 from datetime import datetime
 
-from experimental.sheets_service import SheetsService
 from src.time_utils import now_et, format_dt
+
+if TYPE_CHECKING:
+    from services.postgres_service import PostgresService
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)
 class RankService:
     """Service for managing employee ranks and rank changes."""
 
-    def __init__(self, sheets_service: SheetsService):
+    def __init__(self, sheets_service: "PostgresService"):
         """Initialize rank service.
 
         Args:

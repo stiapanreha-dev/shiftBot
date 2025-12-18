@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 
 from sheets_service import SheetsService
-from rank_service import RankService
+from services.rank_service import RankService
 from time_utils import parse_dt
 
 logging.basicConfig(level=logging.INFO)

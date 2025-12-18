@@ -11,7 +11,7 @@ from decimal import Decimal
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-from postgres_service_final import PostgresService
+from services.postgres_service import PostgresService
 
 def main():
     service = PostgresService()

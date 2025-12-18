@@ -9,7 +9,7 @@ sys.path.insert(0, str(project_root))
 
 import logging
 from sheets_service import SheetsService
-from rank_service import RankService
+from services.rank_service import RankService
 
 logging.basicConfig(
     level=logging.INFO,

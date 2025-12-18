@@ -11,7 +11,7 @@ from decimal import Decimal
 from datetime import datetime
 
 from sheets_service import SheetsService
-from rank_service import RankService
+from services.rank_service import RankService
 from time_utils import format_dt, now_et
 
 logging.basicConfig(level=logging.INFO)

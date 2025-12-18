@@ -2,7 +2,7 @@
 """Test script for commission breakdown functionality."""
 
 import sys
-from handlers import get_commission_breakdown
+from src.handlers import get_commission_breakdown
 
 def test_commission_breakdown():
     """Test the commission breakdown function."""
