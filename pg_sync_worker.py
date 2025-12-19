@@ -27,6 +27,14 @@ from psycopg2.extras import RealDictCursor
 import gspread
 from google.oauth2.service_account import Credentials
 
+from services.sync import (
+    ShiftSyncProcessor,
+    BonusSyncProcessor,
+    RankSyncProcessor,
+    EmployeeSyncProcessor,
+    FortnightSyncProcessor,
+)
+
 # Setup logging
 log_dir = Path('/opt/alex12060-bot/logs')
 log_dir.mkdir(parents=True, exist_ok=True)
@@ -74,6 +82,9 @@ class PostgresSyncWorker:
         self.db_conn = None
         self.sheets_client = None
         self.spreadsheet = None
+
+        # Sync processors (initialized after connections)
+        self.processors = {}
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -136,6 +147,9 @@ class PostgresSyncWorker:
             self.spreadsheet = self.sheets_client.open_by_key(self.spreadsheet_id)
             logger.info("Google Sheets connection established")
 
+            # Initialize sync processors
+            self._init_processors()
+
             return True
 
         except Exception as e:
@@ -143,6 +157,17 @@ class PostgresSyncWorker:
             import traceback
             logger.error(traceback.format_exc())
             return False
+
+    def _init_processors(self):
+        """Initialize sync processors for each table."""
+        self.processors = {
+            'shifts': ShiftSyncProcessor(self.spreadsheet, self.db_conn),
+            'active_bonuses': BonusSyncProcessor(self.spreadsheet, self.db_conn),
+            'employee_ranks': RankSyncProcessor(self.spreadsheet, self.db_conn),
+            'employees': EmployeeSyncProcessor(self.spreadsheet, self.db_conn),
+            'employee_fortnights': FortnightSyncProcessor(self.spreadsheet, self.db_conn),
+        }
+        logger.info(f"Initialized {len(self.processors)} sync processors")
 
     def _get_pending_syncs(self) -> list:
         """Get all pending sync records from sync_queue.
@@ -168,405 +193,6 @@ class PostgresSyncWorker:
         except Exception as e:
             logger.error(f"Failed to get pending syncs: {e}")
             return []
-
-    def _sync_shift(self, record_id: int, operation: str, data: dict):
-        """Sync a shift record to Google Sheets.
-
-        Args:
-            record_id: Shift ID
-            operation: INSERT, UPDATE, or DELETE
-            data: Record data (JSONB from PostgreSQL)
-        """
-        try:
-            # Get Shifts worksheet
-            worksheet = self.spreadsheet.worksheet('Shifts')
-
-            if operation == 'DELETE':
-                # Find and delete row
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    worksheet.delete_rows(cell.row)
-                    logger.info(f"Deleted shift {record_id} from Google Sheets")
-                return
-
-            # For INSERT/UPDATE, get the full shift data from PostgreSQL
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT
-                        s.id,
-                        s.date,
-                        s.employee_id,
-                        s.employee_name,
-                        s.clock_in,
-                        s.clock_out,
-                        s.worked_hours,
-                        s.total_sales,
-                        s.net_sales,
-                        s.commission_pct,
-                        s.total_hourly,
-                        s.commissions,
-                        s.total_made,
-                        s.rolling_average,
-                        s.bonus_counter,
-                        COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 1), 0) as model_a,
-                        COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 2), 0) as model_b,
-                        COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 3), 0) as model_c
-                    FROM shifts s
-                    WHERE s.id = %s
-                """, (record_id,))
-                shift = cur.fetchone()
-
-            if not shift:
-                logger.warning(f"Shift {record_id} not found in database")
-                return
-
-            # Format row data for Google Sheets
-            # Columns: ID, Date, EmployeeID, EmployeeName, ClockIn, ClockOut, WorkedHours,
-            #          ModelA, ModelB, ModelC, TotalSales, NetSales, CommissionPct,
-            #          TotalHourly, Commissions, TotalMade, RollingAverage, BonusCounter
-            row_data = [
-                shift['id'],
-                shift['date'].strftime('%Y-%m-%d %H:%M:%S') if shift['date'] else '',
-                shift['employee_id'],
-                shift['employee_name'],
-                shift['clock_in'].strftime('%Y-%m-%d %H:%M:%S') if shift['clock_in'] else '',
-                shift['clock_out'].strftime('%Y-%m-%d %H:%M:%S') if shift['clock_out'] else '',
-                float(shift['worked_hours']) if shift['worked_hours'] else 0,
-                float(shift['model_a']) if shift['model_a'] else 0,
-                float(shift['model_b']) if shift['model_b'] else 0,
-                float(shift['model_c']) if shift['model_c'] else 0,
-                float(shift['total_sales']) if shift['total_sales'] else 0,
-                float(shift['net_sales']) if shift['net_sales'] else 0,
-                float(shift['commission_pct']) if shift['commission_pct'] else 0,
-                float(shift['total_hourly']) if shift['total_hourly'] else 0,
-                float(shift['commissions']) if shift['commissions'] else 0,
-                float(shift['total_made']) if shift['total_made'] else 0,
-                float(shift['rolling_average']) if shift['rolling_average'] else 0,
-                'TRUE' if shift['bonus_counter'] else 'FALSE'
-            ]
-
-            # Check if row exists
-            try:
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    # Update existing row
-                    worksheet.update(f'A{cell.row}:R{cell.row}', [row_data])
-                    logger.info(f"Updated shift {record_id} in Google Sheets")
-                else:
-                    # Append new row
-                    worksheet.append_row(row_data)
-                    logger.info(f"Inserted shift {record_id} to Google Sheets")
-            except gspread.exceptions.CellNotFound:
-                # Append new row
-                worksheet.append_row(row_data)
-                logger.info(f"Inserted shift {record_id} to Google Sheets")
-
-        except Exception as e:
-            logger.error(f"Failed to sync shift {record_id}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise
-
-    def _sync_active_bonus(self, record_id: int, operation: str, data: dict):
-        """Sync an active bonus record to Google Sheets.
-
-        Args:
-            record_id: Bonus ID
-            operation: INSERT, UPDATE, or DELETE
-            data: Record data (JSONB from PostgreSQL)
-        """
-        try:
-            worksheet = self.spreadsheet.worksheet('ActiveBonuses')
-
-            if operation == 'DELETE':
-                # Find and delete row
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    worksheet.delete_rows(cell.row)
-                    logger.info(f"Deleted active bonus {record_id} from Google Sheets")
-                return
-
-            # For INSERT/UPDATE, get the full data from PostgreSQL
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id, employee_id, bonus_type, value, applied, shift_id, created_at
-                    FROM active_bonuses
-                    WHERE id = %s
-                """, (record_id,))
-                bonus = cur.fetchone()
-
-            if not bonus:
-                logger.warning(f"Active bonus {record_id} not found in database")
-                return
-
-            # Format row data
-            row_data = [
-                bonus['id'],
-                bonus['employee_id'],
-                bonus['bonus_type'],
-                float(bonus['value']) if bonus['value'] else 0,
-                'TRUE' if bonus['applied'] else 'FALSE',
-                bonus['shift_id'] if bonus['shift_id'] else '',
-                bonus['created_at'].strftime('%Y-%m-%d %H:%M:%S') if bonus['created_at'] else ''
-            ]
-
-            # Check if row exists
-            try:
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    # Update existing row
-                    worksheet.update(f'A{cell.row}:G{cell.row}', [row_data])
-                    logger.info(f"Updated active bonus {record_id} in Google Sheets")
-                else:
-                    # Append new row
-                    worksheet.append_row(row_data)
-                    logger.info(f"Inserted active bonus {record_id} to Google Sheets")
-            except gspread.exceptions.CellNotFound:
-                # Append new row
-                worksheet.append_row(row_data)
-                logger.info(f"Inserted active bonus {record_id} to Google Sheets")
-
-        except Exception as e:
-            logger.error(f"Failed to sync active bonus {record_id}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise
-
-    def _sync_employee_rank(self, record_id: int, operation: str, data: dict):
-        """Sync an employee rank record to Google Sheets.
-
-        Args:
-            record_id: Employee rank ID
-            operation: INSERT, UPDATE, or DELETE
-            data: Record data (JSONB from PostgreSQL)
-        """
-        try:
-            worksheet = self.spreadsheet.worksheet('EmployeeRanks')
-
-            if operation == 'DELETE':
-                # Find and delete row
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    worksheet.delete_rows(cell.row)
-                    logger.info(f"Deleted employee rank {record_id} from Google Sheets")
-                return
-
-            # For INSERT/UPDATE, get the full data from PostgreSQL
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT
-                        er.employee_id,
-                        er.year,
-                        er.month,
-                        r_current.name as current_rank,
-                        r_prev.name as previous_rank,
-                        er.updated_at,
-                        er.notified
-                    FROM employee_ranks er
-                    LEFT JOIN ranks r_current ON er.current_rank_id = r_current.id
-                    LEFT JOIN ranks r_prev ON er.previous_rank_id = r_prev.id
-                    WHERE er.id = %s
-                """, (record_id,))
-                rank = cur.fetchone()
-
-            if not rank:
-                logger.warning(f"Employee rank {record_id} not found in database")
-                return
-
-            # Format row data
-            row_data = [
-                rank['employee_id'],
-                rank['year'],
-                rank['month'],
-                rank['current_rank'] if rank['current_rank'] else '',
-                rank['previous_rank'] if rank['previous_rank'] else '',
-                rank['updated_at'].strftime('%Y-%m-%d %H:%M:%S') if rank['updated_at'] else '',
-                'TRUE' if rank['notified'] else 'FALSE'
-            ]
-
-            # Find by employee_id, year, month (composite key)
-            all_values = worksheet.get_all_values()
-            found_row = None
-            for idx, row in enumerate(all_values[1:], start=2):  # Skip header
-                if (len(row) >= 3 and
-                    str(row[0]) == str(rank['employee_id']) and
-                    str(row[1]) == str(rank['year']) and
-                    str(row[2]) == str(rank['month'])):
-                    found_row = idx
-                    break
-
-            if found_row:
-                # Update existing row
-                worksheet.update(f'A{found_row}:G{found_row}', [row_data])
-                logger.info(f"Updated employee rank {record_id} in Google Sheets")
-            else:
-                # Append new row
-                worksheet.append_row(row_data)
-                logger.info(f"Inserted employee rank {record_id} to Google Sheets")
-
-        except Exception as e:
-            logger.error(f"Failed to sync employee rank {record_id}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise
-
-    def _sync_employee(self, record_id: int, operation: str, data: dict):
-        """Sync an employee record to Google Sheets EmployeeSettings.
-
-        Args:
-            record_id: Employee ID
-            operation: INSERT, UPDATE, or DELETE
-            data: Record data (JSONB from PostgreSQL)
-        """
-        try:
-            worksheet = self.spreadsheet.worksheet('EmployeeSettings')
-
-            if operation == 'DELETE':
-                # Find and delete row by employee ID
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    worksheet.delete_rows(cell.row)
-                    logger.info(f"Deleted employee {record_id} from Google Sheets")
-                return
-
-            # For INSERT/UPDATE, get the full data from PostgreSQL
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id, name, telegram_id, is_active, hourly_wage, sales_commission
-                    FROM employees
-                    WHERE id = %s
-                """, (record_id,))
-                employee = cur.fetchone()
-
-            if not employee:
-                logger.warning(f"Employee {record_id} not found in database")
-                return
-
-            # Format row data for EmployeeSettings worksheet
-            # Columns: EmployeeID, EmployeeName, Hourly wage, Sales commission, Active
-            row_data = [
-                employee['id'],
-                employee['name'],
-                float(employee['hourly_wage']) if employee['hourly_wage'] else 15.0,
-                float(employee['sales_commission']) if employee['sales_commission'] else 8.0,
-                'TRUE' if employee['is_active'] else 'FALSE'
-            ]
-
-            # Check if row exists
-            try:
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    # Update existing row
-                    worksheet.update(f'A{cell.row}:E{cell.row}', [row_data])
-                    logger.info(f"Updated employee {record_id} in Google Sheets")
-                else:
-                    # Append new row
-                    worksheet.append_row(row_data)
-                    logger.info(f"Inserted employee {record_id} to Google Sheets")
-            except gspread.exceptions.CellNotFound:
-                # Append new row
-                worksheet.append_row(row_data)
-                logger.info(f"Inserted employee {record_id} to Google Sheets")
-
-        except Exception as e:
-            logger.error(f"Failed to sync employee {record_id}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise
-
-    def _sync_employee_fortnight(self, record_id: int, operation: str, data: dict):
-        """Sync an employee fortnight record to Google Sheets.
-
-        Args:
-            record_id: Fortnight ID
-            operation: INSERT, UPDATE, or DELETE
-            data: Record data (JSONB from PostgreSQL)
-        """
-        try:
-            worksheet = self.spreadsheet.worksheet('EmployeeFortnights')
-
-            if operation == 'DELETE':
-                # Find and delete row
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    worksheet.delete_rows(cell.row)
-                    logger.info(f"Deleted employee fortnight {record_id} from Google Sheets")
-                return
-
-            # For INSERT/UPDATE, get the full data from PostgreSQL
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT
-                        ef.id,
-                        ef.employee_id,
-                        e.name as employee_name,
-                        ef.year,
-                        ef.period,
-                        ef.start_date,
-                        ef.end_date,
-                        ef.total_hours,
-                        ef.total_sales,
-                        ef.total_commissions,
-                        ef.bonus_counter_count,
-                        ef.bonus_counter_amount,
-                        ef.total_salary,
-                        ef.paid,
-                        ef.paid_at,
-                        ef.created_at
-                    FROM employee_fortnights ef
-                    LEFT JOIN employees e ON ef.employee_id = e.id
-                    WHERE ef.id = %s
-                """, (record_id,))
-                fortnight = cur.fetchone()
-
-            if not fortnight:
-                logger.warning(f"Employee fortnight {record_id} not found in database")
-                return
-
-            # Format row data
-            # Columns: ID, EmployeeID, EmployeeName, Year, Period, StartDate, EndDate,
-            #          TotalHours, TotalSales, TotalCommissions, BonusCounterCount,
-            #          BonusCounterAmount, TotalSalary, Paid, PaidAt, CreatedAt
-            row_data = [
-                fortnight['id'],
-                fortnight['employee_id'],
-                fortnight['employee_name'] if fortnight['employee_name'] else '',
-                fortnight['year'],
-                fortnight['period'],
-                fortnight['start_date'].strftime('%Y-%m-%d') if fortnight['start_date'] else '',
-                fortnight['end_date'].strftime('%Y-%m-%d') if fortnight['end_date'] else '',
-                float(fortnight['total_hours']) if fortnight['total_hours'] else 0,
-                float(fortnight['total_sales']) if fortnight['total_sales'] else 0,
-                float(fortnight['total_commissions']) if fortnight['total_commissions'] else 0,
-                fortnight['bonus_counter_count'] if fortnight['bonus_counter_count'] else 0,
-                float(fortnight['bonus_counter_amount']) if fortnight['bonus_counter_amount'] else 0,
-                float(fortnight['total_salary']) if fortnight['total_salary'] else 0,
-                'TRUE' if fortnight['paid'] else 'FALSE',
-                fortnight['paid_at'].strftime('%Y-%m-%d %H:%M:%S') if fortnight['paid_at'] else '',
-                fortnight['created_at'].strftime('%Y-%m-%d %H:%M:%S') if fortnight['created_at'] else ''
-            ]
-
-            # Check if row exists
-            try:
-                cell = worksheet.find(str(record_id), in_column=1)
-                if cell:
-                    # Update existing row
-                    worksheet.update(f'A{cell.row}:P{cell.row}', [row_data])
-                    logger.info(f"Updated employee fortnight {record_id} in Google Sheets")
-                else:
-                    # Append new row
-                    worksheet.append_row(row_data)
-                    logger.info(f"Inserted employee fortnight {record_id} to Google Sheets")
-            except gspread.exceptions.CellNotFound:
-                # Append new row
-                worksheet.append_row(row_data)
-                logger.info(f"Inserted employee fortnight {record_id} to Google Sheets")
-
-        except Exception as e:
-            logger.error(f"Failed to sync employee fortnight {record_id}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise
 
     def _mark_synced(self, sync_id: int):
         """Mark a sync record as synced.
@@ -645,17 +271,10 @@ class PostgresSyncWorker:
 
                     logger.info(f"Syncing {table_name} {record_id} ({operation})")
 
-                    # Route to appropriate sync method
-                    if table_name == 'shifts':
-                        self._sync_shift(record_id, operation, data)
-                    elif table_name == 'active_bonuses':
-                        self._sync_active_bonus(record_id, operation, data)
-                    elif table_name == 'employee_ranks':
-                        self._sync_employee_rank(record_id, operation, data)
-                    elif table_name == 'employees':
-                        self._sync_employee(record_id, operation, data)
-                    elif table_name == 'employee_fortnights':
-                        self._sync_employee_fortnight(record_id, operation, data)
+                    # Route to appropriate processor
+                    processor = self.processors.get(table_name)
+                    if processor:
+                        processor.process(record_id, operation, data)
                     else:
                         logger.warning(f"Unknown table: {table_name}")
                         continue

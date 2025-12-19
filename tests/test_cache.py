@@ -13,7 +13,7 @@ Date: 2025-11-10
 
 import logging
 import time
-from services import sheets_service, cache_manager
+from services.singleton import sheets_service, cache_manager
 
 # Setup logging
 logging.basicConfig(
