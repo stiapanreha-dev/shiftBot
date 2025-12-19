@@ -208,7 +208,8 @@ class PostgresSyncWorker:
                         s.total_made,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 1), 0) as model_a,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 2), 0) as model_b,
-                        COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 3), 0) as model_c
+                        COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 3), 0) as model_c,
+                        COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 9), 0) as model_d
                     FROM shifts s
                     WHERE s.id = %s
                 """, (record_id,))
@@ -230,6 +231,7 @@ class PostgresSyncWorker:
                 float(shift['model_a']) if shift['model_a'] else 0,
                 float(shift['model_b']) if shift['model_b'] else 0,
                 float(shift['model_c']) if shift['model_c'] else 0,
+                float(shift['model_d']) if shift['model_d'] else 0,
                 float(shift['total_sales']) if shift['total_sales'] else 0,
                 float(shift['net_sales']) if shift['net_sales'] else 0,
                 float(shift['commission_pct']) if shift['commission_pct'] else 0,
@@ -243,7 +245,7 @@ class PostgresSyncWorker:
                 cell = worksheet.find(str(record_id), in_column=1)
                 if cell:
                     # Update existing row
-                    worksheet.update(f'A{cell.row}:P{cell.row}', [row_data])
+                    worksheet.update(f'A{cell.row}:Q{cell.row}', [row_data])
                     logger.info(f"Updated shift {record_id} in Google Sheets")
                 else:
                     # Append new row
