@@ -25,7 +25,7 @@ SHEET_HEADERS = {
         'EmployeeID', 'Year', 'Month', 'CurrentRank', 'PreviousRank', 'UpdatedAt', 'Notified'
     ],
     'EmployeeSettings': [
-        'TelegramID', 'Name', 'HourlyWage', 'SalesCommission', 'ID'
+        'ID', 'Name', 'HourlyWage', 'SalesCommission', 'Active'
     ]
 }
 
