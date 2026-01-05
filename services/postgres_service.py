@@ -161,9 +161,12 @@ class PostgresService:
             # Calculate total_per_hour
             total_per_hour = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
 
-            # Commission is now tier-based (from base_commissions table via employee settings)
-            # No more dynamic rate - commission_pct equals base_commission from tier
-            commission_pct = base_commission
+            # Calculate dynamic commission rate based on current shift sales
+            shift_date_normalized = shift_date.replace("/", "-")
+            dynamic_rate = Decimal(str(self.calculate_dynamic_rate(employee_id, shift_date_normalized, float(total_sales))))
+
+            # Commission = base (manual) + dynamic (0-3% based on shift sales)
+            commission_pct = base_commission + dynamic_rate
             flat_bonuses = Decimal('0')
             applied_bonus_ids = []  # Track applied bonuses to mark them later
 
@@ -655,12 +658,8 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            # Join with base_commissions to get tier percentage
             cursor.execute("""
-                SELECT e.*, bc.percentage as tier_percentage, bc.name as tier_name
-                FROM employees e
-                LEFT JOIN base_commissions bc ON e.base_commission_id = bc.id
-                WHERE e.telegram_id = %s AND e.is_active = TRUE
+                SELECT * FROM employees WHERE telegram_id = %s AND is_active = TRUE
             """, (employee_id,))
 
             employee = cursor.fetchone()
@@ -668,9 +667,9 @@ class PostgresService:
             if not employee:
                 return None
 
-            # Get commission from tier (default 6% = Tier C)
+            # Get manual sales_commission (default 7%)
             hourly_wage = float(employee['hourly_wage']) if employee['hourly_wage'] else 2.0
-            sales_commission = float(employee['tier_percentage']) if employee['tier_percentage'] else 6.0
+            sales_commission = float(employee['sales_commission']) if employee['sales_commission'] else 7.0
 
             result = {
                 'EmployeeID': employee['id'],
@@ -683,8 +682,6 @@ class PostgresService:
                 'Hourly wage': hourly_wage,
                 'Active': employee['is_active'],
                 'active': employee['is_active'],
-                'TierName': employee['tier_name'] or 'Tier C',
-                'tier_name': employee['tier_name'] or 'Tier C',
             }
 
             return result
@@ -735,18 +732,13 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            # Get Tier C id for new employees (default tier)
-            cursor.execute("SELECT id FROM base_commissions WHERE name = 'Tier C'")
-            tier_c = cursor.fetchone()
-            tier_c_id = tier_c['id'] if tier_c else None
-
             # Set id = telegram_id so foreign keys in shifts work correctly
-            # New employees start with Tier C (6% commission)
+            # New employees get default sales_commission = 7%
             cursor.execute("""
-                INSERT INTO employees (id, name, telegram_id, is_active, base_commission_id)
-                VALUES (%s, %s, %s, TRUE, %s)
+                INSERT INTO employees (id, name, telegram_id, is_active, sales_commission)
+                VALUES (%s, %s, %s, TRUE, 7.0)
                 ON CONFLICT (id) DO NOTHING
-            """, (telegram_id, name, telegram_id, tier_c_id))
+            """, (telegram_id, name, telegram_id))
 
             conn.commit()
             logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id})")
@@ -806,6 +798,35 @@ class PostgresService:
                 self.cache_manager.set('dynamic_rates', 'all', result, ttl=900)
 
             return result
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def calculate_dynamic_rate(
+        self,
+        employee_id: int,
+        shift_date: str,
+        current_total_sales: float = 0
+    ) -> float:
+        """Calculate dynamic commission rate based on current shift sales.
+
+        Args:
+            employee_id: Employee ID (kept for interface compatibility)
+            shift_date: Shift date (kept for interface compatibility)
+            current_total_sales: Current shift total sales
+
+        Returns:
+            Dynamic commission rate percentage (0-3%)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("SELECT get_dynamic_rate(%s) as rate", (current_total_sales,))
+            result = cursor.fetchone()
+
+            return float(result['rate']) if result else 0.0
 
         finally:
             cursor.close()
