@@ -161,13 +161,9 @@ class PostgresService:
             # Calculate total_per_hour
             total_per_hour = Decimal(str(shift_data.get('total_per_hour', worked_hours * hourly_wage)))
 
-            # Calculate dynamic commission rate
-            # Convert shift_date format from YYYY/MM/DD to YYYY-MM-DD for calculate_dynamic_rate
-            shift_date_normalized = shift_date.replace("/", "-")
-            dynamic_rate = Decimal(str(self.calculate_dynamic_rate(employee_id, shift_date_normalized, float(total_sales))))
-
-            # Start with base + dynamic commission
-            commission_pct = base_commission + dynamic_rate
+            # Commission is now tier-based (from base_commissions table via employee settings)
+            # No more dynamic rate - commission_pct equals base_commission from tier
+            commission_pct = base_commission
             flat_bonuses = Decimal('0')
             applied_bonus_ids = []  # Track applied bonuses to mark them later
 
@@ -650,19 +646,21 @@ class PostgresService:
         """Get employee settings in SheetsService format.
 
         Args:
-            employee_id: Employee ID
+            employee_id: Employee ID (telegram_id)
 
         Returns:
             Employee settings dict or None
         """
-        # Try cache first
-        # Always fetch fresh from DB, no caching for employee settings
         conn = self._get_conn()
         cursor = conn.cursor()
 
         try:
+            # Join with base_commissions to get tier percentage
             cursor.execute("""
-                SELECT * FROM employees WHERE telegram_id = %s AND is_active = TRUE
+                SELECT e.*, bc.percentage as tier_percentage, bc.name as tier_name
+                FROM employees e
+                LEFT JOIN base_commissions bc ON e.base_commission_id = bc.id
+                WHERE e.telegram_id = %s AND e.is_active = TRUE
             """, (employee_id,))
 
             employee = cursor.fetchone()
@@ -670,9 +668,9 @@ class PostgresService:
             if not employee:
                 return None
 
-            # Convert to SheetsService format
-            hourly_wage = float(employee['hourly_wage']) if employee['hourly_wage'] else 15.0
-            sales_commission = float(employee['sales_commission']) if employee['sales_commission'] else 8.0
+            # Get commission from tier (default 6% = Tier C)
+            hourly_wage = float(employee['hourly_wage']) if employee['hourly_wage'] else 2.0
+            sales_commission = float(employee['tier_percentage']) if employee['tier_percentage'] else 6.0
 
             result = {
                 'EmployeeID': employee['id'],
@@ -685,6 +683,8 @@ class PostgresService:
                 'Hourly wage': hourly_wage,
                 'Active': employee['is_active'],
                 'active': employee['is_active'],
+                'TierName': employee['tier_name'] or 'Tier C',
+                'tier_name': employee['tier_name'] or 'Tier C',
             }
 
             return result
@@ -735,12 +735,18 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
+            # Get Tier C id for new employees (default tier)
+            cursor.execute("SELECT id FROM base_commissions WHERE name = 'Tier C'")
+            tier_c = cursor.fetchone()
+            tier_c_id = tier_c['id'] if tier_c else None
+
             # Set id = telegram_id so foreign keys in shifts work correctly
+            # New employees start with Tier C (6% commission)
             cursor.execute("""
-                INSERT INTO employees (id, name, telegram_id, is_active)
-                VALUES (%s, %s, %s, TRUE)
+                INSERT INTO employees (id, name, telegram_id, is_active, base_commission_id)
+                VALUES (%s, %s, %s, TRUE, %s)
                 ON CONFLICT (id) DO NOTHING
-            """, (telegram_id, name, telegram_id))
+            """, (telegram_id, name, telegram_id, tier_c_id))
 
             conn.commit()
             logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id})")
@@ -805,31 +811,107 @@ class PostgresService:
             cursor.close()
             conn.close()
 
-    def calculate_dynamic_rate(
-        self,
-        employee_id: int,
-        shift_date: str,
-        current_total_sales: Decimal = Decimal("0")
-    ) -> float:
-        """Calculate dynamic commission rate based on current shift sales only.
+    # ========== Tier Management ==========
+
+    def update_employee_tier(self, employee_id: int, year: int, month: int) -> Optional[Dict]:
+        """Update employee tier based on sales for specified month.
 
         Args:
-            employee_id: Employee ID (kept for interface compatibility)
-            shift_date: Shift date (kept for interface compatibility)
-            current_total_sales: Current shift total sales
+            employee_id: Employee ID
+            year: Year to calculate sales for
+            month: Month to calculate sales for
 
         Returns:
-            Dynamic commission rate percentage
+            Dict with old_tier, new_tier, total_sales or None
         """
         conn = self._get_conn()
         cursor = conn.cursor()
 
         try:
-            # Use only current shift sales for dynamic rate
-            cursor.execute("SELECT get_dynamic_rate(%s) as rate", (current_total_sales,))
-            result = cursor.fetchone()
+            # Get current tier
+            cursor.execute("""
+                SELECT e.base_commission_id, bc.name as tier_name
+                FROM employees e
+                LEFT JOIN base_commissions bc ON e.base_commission_id = bc.id
+                WHERE e.id = %s
+            """, (employee_id,))
+            current = cursor.fetchone()
+            old_tier_name = current['tier_name'] if current else None
 
-            return float(result['rate']) if result else 0.0
+            # Get total sales for the month
+            cursor.execute("""
+                SELECT COALESCE(SUM(total_sales), 0) as total
+                FROM shifts
+                WHERE employee_id = %s
+                  AND EXTRACT(YEAR FROM date) = %s
+                  AND EXTRACT(MONTH FROM date) = %s
+            """, (employee_id, year, month))
+            result = cursor.fetchone()
+            total_sales = float(result['total']) if result else 0
+
+            # Determine new tier
+            cursor.execute("""
+                SELECT id, name, percentage FROM base_commissions
+                WHERE %s >= min_amount AND %s <= max_amount AND is_active = TRUE
+                ORDER BY min_amount DESC LIMIT 1
+            """, (total_sales, total_sales))
+            new_tier = cursor.fetchone()
+
+            if not new_tier:
+                # Default to Tier C
+                cursor.execute("SELECT id, name, percentage FROM base_commissions WHERE name = 'Tier C'")
+                new_tier = cursor.fetchone()
+
+            # Update employee
+            cursor.execute("""
+                UPDATE employees
+                SET base_commission_id = %s,
+                    last_tier_update = CURRENT_DATE,
+                    updated_at = now()
+                WHERE id = %s
+            """, (new_tier['id'], employee_id))
+
+            conn.commit()
+
+            return {
+                'employee_id': employee_id,
+                'old_tier': old_tier_name,
+                'new_tier': new_tier['name'],
+                'new_percentage': float(new_tier['percentage']),
+                'total_sales': total_sales,
+                'changed': old_tier_name != new_tier['name']
+            }
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def update_all_employee_tiers(self, year: int, month: int) -> List[Dict]:
+        """Update tiers for all active employees based on sales for specified month.
+
+        Args:
+            year: Year to calculate sales for
+            month: Month to calculate sales for
+
+        Returns:
+            List of update results
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Get all active employees
+            cursor.execute("SELECT id, name FROM employees WHERE is_active = TRUE")
+            employees = cursor.fetchall()
+
+            results = []
+            for emp in employees:
+                result = self.update_employee_tier(emp['id'], year, month)
+                if result:
+                    result['employee_name'] = emp['name']
+                    results.append(result)
+
+            return results
 
         finally:
             cursor.close()

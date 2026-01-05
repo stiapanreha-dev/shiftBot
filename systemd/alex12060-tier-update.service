@@ -1,0 +1,11 @@
+[Unit]
+Description=Alex12060 Monthly Tier Update
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/alex12060-bot
+ExecStart=/opt/alex12060-bot/venv/bin/python /opt/alex12060-bot/scripts/update_tiers.py
+StandardOutput=append:/opt/alex12060-bot/logs/tier_updates.log
+StandardError=append:/opt/alex12060-bot/logs/tier_updates.log
