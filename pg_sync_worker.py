@@ -22,9 +22,12 @@ import argparse
 import os
 from datetime import datetime
 from pathlib import Path
+from collections import deque
+from functools import wraps
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
 # Setup logging
@@ -40,6 +43,67 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """Simple rate limiter for Google Sheets API.
+
+    Google Sheets API limits: 60 read requests per minute per user.
+    We use 40 requests per minute to be safe.
+    """
+
+    def __init__(self, max_requests: int = 40, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = deque()
+
+    def wait_if_needed(self):
+        """Wait if we've exceeded the rate limit."""
+        now = time.time()
+
+        # Remove old requests outside the window
+        while self.requests and self.requests[0] < now - self.window_seconds:
+            self.requests.popleft()
+
+        # If at limit, wait until oldest request expires
+        if len(self.requests) >= self.max_requests:
+            wait_time = self.requests[0] + self.window_seconds - now + 0.5
+            if wait_time > 0:
+                logger.info(f"Rate limit reached, waiting {wait_time:.1f}s...")
+                time.sleep(wait_time)
+                # Clean up again after waiting
+                now = time.time()
+                while self.requests and self.requests[0] < now - self.window_seconds:
+                    self.requests.popleft()
+
+        # Record this request
+        self.requests.append(time.time())
+
+
+def retry_on_quota_error(max_retries: int = 3, base_delay: float = 30.0):
+    """Decorator to retry on Google API quota errors (429)."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except APIError as e:
+                    if e.response.status_code == 429:
+                        last_error = e
+                        if attempt < max_retries:
+                            delay = base_delay * (2 ** attempt)  # Exponential backoff
+                            logger.warning(f"Quota exceeded (attempt {attempt + 1}/{max_retries + 1}), waiting {delay}s...")
+                            time.sleep(delay)
+                        else:
+                            logger.error(f"Quota exceeded after {max_retries + 1} attempts")
+                            raise
+                    else:
+                        raise
+            raise last_error
+        return wrapper
+    return decorator
 
 
 class PostgresSyncWorker:
@@ -74,6 +138,9 @@ class PostgresSyncWorker:
         self.db_conn = None
         self.sheets_client = None
         self.spreadsheet = None
+
+        # Rate limiter for Google Sheets API (40 requests per minute)
+        self.rate_limiter = RateLimiter(max_requests=40, window_seconds=60)
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -169,6 +236,37 @@ class PostgresSyncWorker:
             logger.error(f"Failed to get pending syncs: {e}")
             return []
 
+    def _sheets_api_call(self, func, *args, **kwargs):
+        """Execute Google Sheets API call with rate limiting and retry.
+
+        Args:
+            func: The API function to call
+            *args, **kwargs: Arguments to pass to the function
+
+        Returns:
+            Result of the API call
+        """
+        max_retries = 3
+        base_delay = 30.0
+
+        for attempt in range(max_retries + 1):
+            # Wait if rate limit reached
+            self.rate_limiter.wait_if_needed()
+
+            try:
+                return func(*args, **kwargs)
+            except APIError as e:
+                if e.response.status_code == 429:
+                    if attempt < max_retries:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Quota exceeded (attempt {attempt + 1}/{max_retries + 1}), waiting {delay}s...")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"Quota exceeded after {max_retries + 1} attempts")
+                        raise
+                else:
+                    raise
+
     def _sync_shift(self, record_id: int, operation: str, data: dict):
         """Sync a shift record to Google Sheets.
 
@@ -179,13 +277,13 @@ class PostgresSyncWorker:
         """
         try:
             # Get Shifts worksheet
-            worksheet = self.spreadsheet.worksheet('Shifts')
+            worksheet = self._sheets_api_call(self.spreadsheet.worksheet, 'Shifts')
 
             if operation == 'DELETE':
                 # Find and delete row
-                cell = worksheet.find(str(record_id), in_column=1)
+                cell = self._sheets_api_call(worksheet.find, str(record_id), in_column=1)
                 if cell:
-                    worksheet.delete_rows(cell.row)
+                    self._sheets_api_call(worksheet.delete_rows, cell.row)
                     logger.info(f"Deleted shift {record_id} from Google Sheets")
                 return
 
@@ -249,18 +347,18 @@ class PostgresSyncWorker:
 
             # Check if row exists
             try:
-                cell = worksheet.find(str(record_id), in_column=1)
+                cell = self._sheets_api_call(worksheet.find, str(record_id), in_column=1)
                 if cell:
                     # Update existing row (19 columns: A to S)
-                    worksheet.update(f'A{cell.row}:S{cell.row}', [row_data])
+                    self._sheets_api_call(worksheet.update, f'A{cell.row}:S{cell.row}', [row_data])
                     logger.info(f"Updated shift {record_id} in Google Sheets")
                 else:
                     # Append new row
-                    worksheet.append_row(row_data)
+                    self._sheets_api_call(worksheet.append_row, row_data)
                     logger.info(f"Inserted shift {record_id} to Google Sheets")
             except gspread.exceptions.CellNotFound:
                 # Append new row
-                worksheet.append_row(row_data)
+                self._sheets_api_call(worksheet.append_row, row_data)
                 logger.info(f"Inserted shift {record_id} to Google Sheets")
 
         except Exception as e:
@@ -278,13 +376,13 @@ class PostgresSyncWorker:
             data: Record data (JSONB from PostgreSQL)
         """
         try:
-            worksheet = self.spreadsheet.worksheet('ActiveBonuses')
+            worksheet = self._sheets_api_call(self.spreadsheet.worksheet, 'ActiveBonuses')
 
             if operation == 'DELETE':
                 # Find and delete row
-                cell = worksheet.find(str(record_id), in_column=1)
+                cell = self._sheets_api_call(worksheet.find, str(record_id), in_column=1)
                 if cell:
-                    worksheet.delete_rows(cell.row)
+                    self._sheets_api_call(worksheet.delete_rows, cell.row)
                     logger.info(f"Deleted active bonus {record_id} from Google Sheets")
                 return
 
@@ -314,18 +412,18 @@ class PostgresSyncWorker:
 
             # Check if row exists
             try:
-                cell = worksheet.find(str(record_id), in_column=1)
+                cell = self._sheets_api_call(worksheet.find, str(record_id), in_column=1)
                 if cell:
                     # Update existing row
-                    worksheet.update(f'A{cell.row}:G{cell.row}', [row_data])
+                    self._sheets_api_call(worksheet.update, f'A{cell.row}:G{cell.row}', [row_data])
                     logger.info(f"Updated active bonus {record_id} in Google Sheets")
                 else:
                     # Append new row
-                    worksheet.append_row(row_data)
+                    self._sheets_api_call(worksheet.append_row, row_data)
                     logger.info(f"Inserted active bonus {record_id} to Google Sheets")
             except gspread.exceptions.CellNotFound:
                 # Append new row
-                worksheet.append_row(row_data)
+                self._sheets_api_call(worksheet.append_row, row_data)
                 logger.info(f"Inserted active bonus {record_id} to Google Sheets")
 
         except Exception as e:
@@ -343,13 +441,13 @@ class PostgresSyncWorker:
             data: Record data (JSONB from PostgreSQL)
         """
         try:
-            worksheet = self.spreadsheet.worksheet('EmployeeRanks')
+            worksheet = self._sheets_api_call(self.spreadsheet.worksheet, 'EmployeeRanks')
 
             if operation == 'DELETE':
                 # Find and delete row
-                cell = worksheet.find(str(record_id), in_column=1)
+                cell = self._sheets_api_call(worksheet.find, str(record_id), in_column=1)
                 if cell:
-                    worksheet.delete_rows(cell.row)
+                    self._sheets_api_call(worksheet.delete_rows, cell.row)
                     logger.info(f"Deleted employee rank {record_id} from Google Sheets")
                 return
 
@@ -387,7 +485,7 @@ class PostgresSyncWorker:
             ]
 
             # Find by employee_id, year, month (composite key)
-            all_values = worksheet.get_all_values()
+            all_values = self._sheets_api_call(worksheet.get_all_values)
             found_row = None
             for idx, row in enumerate(all_values[1:], start=2):  # Skip header
                 if (len(row) >= 3 and
@@ -399,11 +497,11 @@ class PostgresSyncWorker:
 
             if found_row:
                 # Update existing row
-                worksheet.update(f'A{found_row}:G{found_row}', [row_data])
+                self._sheets_api_call(worksheet.update, f'A{found_row}:G{found_row}', [row_data])
                 logger.info(f"Updated employee rank {record_id} in Google Sheets")
             else:
                 # Append new row
-                worksheet.append_row(row_data)
+                self._sheets_api_call(worksheet.append_row, row_data)
                 logger.info(f"Inserted employee rank {record_id} to Google Sheets")
 
         except Exception as e:
@@ -421,13 +519,13 @@ class PostgresSyncWorker:
             data: Record data (JSONB from PostgreSQL)
         """
         try:
-            worksheet = self.spreadsheet.worksheet('EmployeeSettings')
+            worksheet = self._sheets_api_call(self.spreadsheet.worksheet, 'EmployeeSettings')
 
             if operation == 'DELETE':
                 # Find and delete row by employee ID
-                cell = worksheet.find(str(record_id), in_column=1)
+                cell = self._sheets_api_call(worksheet.find, str(record_id), in_column=1)
                 if cell:
-                    worksheet.delete_rows(cell.row)
+                    self._sheets_api_call(worksheet.delete_rows, cell.row)
                     logger.info(f"Deleted employee {record_id} from Google Sheets")
                 return
 
@@ -456,18 +554,18 @@ class PostgresSyncWorker:
 
             # Check if row exists
             try:
-                cell = worksheet.find(str(record_id), in_column=1)
+                cell = self._sheets_api_call(worksheet.find, str(record_id), in_column=1)
                 if cell:
                     # Update existing row
-                    worksheet.update(f'A{cell.row}:E{cell.row}', [row_data])
+                    self._sheets_api_call(worksheet.update, f'A{cell.row}:E{cell.row}', [row_data])
                     logger.info(f"Updated employee {record_id} in Google Sheets")
                 else:
                     # Append new row
-                    worksheet.append_row(row_data)
+                    self._sheets_api_call(worksheet.append_row, row_data)
                     logger.info(f"Inserted employee {record_id} to Google Sheets")
             except gspread.exceptions.CellNotFound:
                 # Append new row
-                worksheet.append_row(row_data)
+                self._sheets_api_call(worksheet.append_row, row_data)
                 logger.info(f"Inserted employee {record_id} to Google Sheets")
 
         except Exception as e:
