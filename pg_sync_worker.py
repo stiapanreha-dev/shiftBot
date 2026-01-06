@@ -206,6 +206,8 @@ class PostgresSyncWorker:
                         s.total_per_hour,
                         s.commissions,
                         s.total_made,
+                        s.rolling_average,
+                        s.bonus_counter,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 1), 0) as model_a,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 2), 0) as model_b,
                         COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 3), 0) as model_c,
@@ -219,33 +221,38 @@ class PostgresSyncWorker:
                 logger.warning(f"Shift {record_id} not found in database")
                 return
 
-            # Format row data for Google Sheets
+            # Format row data for Google Sheets (19 columns, Models at the end)
+            # Columns: ID, Date, EmployeeID, EmployeeName, ClockIn, ClockOut, WorkedHours,
+            #          TotalSales, NetSales, CommissionPct, TotalHourly, Commissions, TotalMade,
+            #          RollingAverage, BonusCounter, ModelA, ModelB, ModelC, ModelD
             row_data = [
-                shift['id'],
-                shift['date'].strftime('%Y-%m-%d %H:%M:%S') if shift['date'] else '',
-                shift['employee_id'],
-                shift['employee_name'],
-                shift['clock_in'].strftime('%Y-%m-%d %H:%M:%S') if shift['clock_in'] else '',
-                shift['clock_out'].strftime('%Y-%m-%d %H:%M:%S') if shift['clock_out'] else '',
-                float(shift['worked_hours']) if shift['worked_hours'] else 0,
-                float(shift['model_a']) if shift['model_a'] else 0,
-                float(shift['model_b']) if shift['model_b'] else 0,
-                float(shift['model_c']) if shift['model_c'] else 0,
-                float(shift['model_d']) if shift['model_d'] else 0,
-                float(shift['total_sales']) if shift['total_sales'] else 0,
-                float(shift['net_sales']) if shift['net_sales'] else 0,
-                float(shift['commission_pct']) if shift['commission_pct'] else 0,
-                float(shift['total_per_hour']) if shift['total_per_hour'] else 0,
-                float(shift['commissions']) if shift['commissions'] else 0,
-                float(shift['total_made']) if shift['total_made'] else 0
+                shift['id'],                                                              # A: ID
+                shift['date'].strftime('%Y-%m-%d %H:%M:%S') if shift['date'] else '',     # B: Date
+                shift['employee_id'],                                                     # C: EmployeeID
+                shift['employee_name'],                                                   # D: EmployeeName
+                shift['clock_in'].strftime('%Y-%m-%d %H:%M:%S') if shift['clock_in'] else '',   # E: ClockIn
+                shift['clock_out'].strftime('%Y-%m-%d %H:%M:%S') if shift['clock_out'] else '', # F: ClockOut
+                float(shift['worked_hours']) if shift['worked_hours'] else 0,             # G: WorkedHours
+                float(shift['total_sales']) if shift['total_sales'] else 0,               # H: TotalSales
+                float(shift['net_sales']) if shift['net_sales'] else 0,                   # I: NetSales
+                float(shift['commission_pct']) if shift['commission_pct'] else 0,         # J: CommissionPct
+                float(shift['total_per_hour']) if shift['total_per_hour'] else 0,         # K: TotalHourly
+                float(shift['commissions']) if shift['commissions'] else 0,               # L: Commissions
+                float(shift['total_made']) if shift['total_made'] else 0,                 # M: TotalMade
+                float(shift['rolling_average']) if shift['rolling_average'] else 0,       # N: RollingAverage
+                'TRUE' if shift['bonus_counter'] else 'FALSE',                            # O: BonusCounter
+                float(shift['model_a']) if shift['model_a'] else 0,                       # P: ModelA
+                float(shift['model_b']) if shift['model_b'] else 0,                       # Q: ModelB
+                float(shift['model_c']) if shift['model_c'] else 0,                       # R: ModelC
+                float(shift['model_d']) if shift['model_d'] else 0,                       # S: ModelD
             ]
 
             # Check if row exists
             try:
                 cell = worksheet.find(str(record_id), in_column=1)
                 if cell:
-                    # Update existing row
-                    worksheet.update(f'A{cell.row}:Q{cell.row}', [row_data])
+                    # Update existing row (19 columns: A to S)
+                    worksheet.update(f'A{cell.row}:S{cell.row}', [row_data])
                     logger.info(f"Updated shift {record_id} in Google Sheets")
                 else:
                     # Append new row
