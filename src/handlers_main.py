@@ -486,7 +486,7 @@ async def check_and_notify_rank(
 
 
 async def handle_finish_shift(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle Finish shift button - save to Google Sheets.
+    """Handle Finish shift button - save shift to database.
 
     Args:
         update: Telegram update.
@@ -500,42 +500,35 @@ async def handle_finish_shift(update: Update, context: ContextTypes.DEFAULT_TYPE
     await remove_keyboard(query)
 
     user = update.effective_user
+    shift_id = None
 
+    logger.info(f"[SAVE] User {user.id} finishing shift creation")
+
+    # Show typing indicator while saving (non-critical)
     try:
-        logger.info(f"[SAVE] User {user.id} finishing shift creation")
-
-        # Show typing indicator while saving to Sheets
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except Exception:
+        pass
 
-        sheets = sheets_service
+    sheets = sheets_service
 
-        shift_data = {
-            "date": format_dt(now_et()),
-            "employee_id": context.user_data["employee_id"],
-            "employee_name": context.user_data["employee_name"],
-            "clock_in": context.user_data["clock_in"],
-            "clock_out": context.user_data["clock_out"],
-            "products": context.user_data["products"],
-        }
+    shift_data = {
+        "date": format_dt(now_et()),
+        "employee_id": context.user_data["employee_id"],
+        "employee_name": context.user_data["employee_name"],
+        "clock_in": context.user_data["clock_in"],
+        "clock_out": context.user_data["clock_out"],
+        "products": context.user_data["products"],
+    }
 
-        # Calculate totals for logging
-        total_sales = sum(Decimal(str(v)) for v in shift_data["products"].values())
-        products_str = ", ".join([f"{k}:{v}" for k, v in shift_data["products"].items()])
+    # Calculate totals for logging
+    total_sales = sum(Decimal(str(v)) for v in shift_data["products"].values())
+    products_str = ", ".join([f"{k}:{v}" for k, v in shift_data["products"].items()])
 
+    # Step 1: Save to database (critical operation)
+    try:
         shift_id = sheets.create_shift(shift_data)
-
-        # Get created shift data for accurate totals
         created_shift = sheets.get_shift_by_id(shift_id)
-
-        summary = build_summary(shift_data, shift_id, created_shift)
-
-        # Import main_menu_button here to avoid circular import
-        from src.keyboards import main_menu_button
-
-        sent_msg = await query.message.reply_text(summary, reply_markup=main_menu_button())
-        # Save keyboard message ID
-        context.user_data["last_keyboard_message_id"] = sent_msg.message_id
-
         logger.info(
             f"[SAVED] Shift {shift_id} created for user {user.id} | "
             f"Clock in: {shift_data['clock_in']} | "
@@ -543,36 +536,61 @@ async def handle_finish_shift(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"Products: {products_str} | "
             f"Total: {total_sales}"
         )
-
-        # Send tomorrow's target notification
-        try:
-            shift_date = shift_data['date']
-            tomorrow_target = sheets.calculate_tomorrow_target(user.id, shift_date)
-            bonus_count = sheets.get_fortnight_bonus_count(user.id)
-
-            target_msg = (
-                f"\n🎯 Your target for tomorrow is: ${tomorrow_target:,.0f}\n\n"
-                f"Hit it and you earn +1% salary boost! Keep grinding 💪\n\n"
-                f"Current bonus: +{bonus_count}% ✨"
-            )
-            await query.message.reply_text(target_msg)
-        except Exception as e:
-            logger.warning(f"Failed to send target notification: {e}")
-
-        # Check and notify rank changes
-        await check_and_notify_rank(user.id, shift_id, context, query.message)
-
-        reset_flow(context)
-
-        return START
-
     except Exception as e:
-        logger.error(f"[ERROR] Failed to create shift for user {user.id}: {e}", exc_info=True)
-        await query.message.reply_text(
-            "❌ Error saving shift to Google Sheets.\n"
-            "Please try again later or contact administrator."
-        )
+        logger.error(f"[DB_ERROR] Failed to save shift for user {user.id}: {e}", exc_info=True)
+        try:
+            await query.message.reply_text(
+                "❌ Error creating shift.\n"
+                "Please try again. If the problem persists, contact administrator."
+            )
+        except Exception:
+            pass
+        reset_flow(context)
         return ConversationHandler.END
+
+    # Step 2: Send summary message (non-critical - shift already saved)
+    try:
+        summary = build_summary(shift_data, shift_id, created_shift)
+
+        # Import main_menu_button here to avoid circular import
+        from src.keyboards import main_menu_button
+
+        sent_msg = await query.message.reply_text(summary, reply_markup=main_menu_button())
+        context.user_data["last_keyboard_message_id"] = sent_msg.message_id
+    except Exception as e:
+        logger.warning(f"[TG_ERROR] Failed to send summary for shift {shift_id}, user {user.id}: {e}")
+        # Shift is saved, but message failed - try to inform user
+        try:
+            await query.message.reply_text(
+                f"✅ Shift #{shift_id} saved successfully!\n"
+                "⚠️ There was an issue displaying the summary."
+            )
+        except Exception:
+            pass
+
+    # Step 3: Send tomorrow's target notification (non-critical)
+    try:
+        shift_date = shift_data['date']
+        tomorrow_target = sheets.calculate_tomorrow_target(user.id, shift_date)
+        bonus_count = sheets.get_fortnight_bonus_count(user.id)
+
+        target_msg = (
+            f"\n🎯 Your target for tomorrow is: ${tomorrow_target:,.0f}\n\n"
+            f"Hit it and you earn +1% salary boost! Keep grinding 💪\n\n"
+            f"Current bonus: +{bonus_count}% ✨"
+        )
+        await query.message.reply_text(target_msg)
+    except Exception as e:
+        logger.warning(f"[TG_ERROR] Failed to send target notification: {e}")
+
+    # Step 4: Check and notify rank changes (non-critical)
+    try:
+        await check_and_notify_rank(user.id, shift_id, context, query.message)
+    except Exception as e:
+        logger.warning(f"[RANK_ERROR] Failed to check rank for user {user.id}: {e}")
+
+    reset_flow(context)
+    return START
 
 
 # =============================================================================

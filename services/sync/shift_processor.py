@@ -55,8 +55,8 @@ class ShiftSyncProcessor(BaseSyncProcessor):
         """Format shift for Google Sheets.
 
         Columns: ID, Date, EmployeeID, EmployeeName, ClockIn, ClockOut, WorkedHours,
-                 ModelA, ModelB, ModelC, ModelD, TotalSales, NetSales, CommissionPct,
-                 TotalHourly, Commissions, TotalMade, RollingAverage, BonusCounter
+                 TotalSales, NetSales, CommissionPct, TotalHourly, Commissions, TotalMade,
+                 RollingAverage, BonusCounter, ModelA, ModelB, ModelC, ModelD
         """
         return [
             record['id'],
@@ -66,10 +66,6 @@ class ShiftSyncProcessor(BaseSyncProcessor):
             record['clock_in'].strftime('%Y-%m-%d %H:%M:%S') if record['clock_in'] else '',
             record['clock_out'].strftime('%Y-%m-%d %H:%M:%S') if record['clock_out'] else '',
             float(record['worked_hours']) if record['worked_hours'] else 0,
-            float(record['model_a']) if record['model_a'] else 0,
-            float(record['model_b']) if record['model_b'] else 0,
-            float(record['model_c']) if record['model_c'] else 0,
-            float(record['model_d']) if record['model_d'] else 0,
             float(record['total_sales']) if record['total_sales'] else 0,
             float(record['net_sales']) if record['net_sales'] else 0,
             float(record['commission_pct']) if record['commission_pct'] else 0,
@@ -77,5 +73,9 @@ class ShiftSyncProcessor(BaseSyncProcessor):
             float(record['commissions']) if record['commissions'] else 0,
             float(record['total_made']) if record['total_made'] else 0,
             float(record['rolling_average']) if record['rolling_average'] else 0,
-            'TRUE' if record['bonus_counter'] else 'FALSE'
+            'TRUE' if record['bonus_counter'] else 'FALSE',
+            float(record['model_a']) if record['model_a'] else 0,
+            float(record['model_b']) if record['model_b'] else 0,
+            float(record['model_c']) if record['model_c'] else 0,
+            float(record['model_d']) if record['model_d'] else 0,
         ]

@@ -11,7 +11,7 @@ Usage:
 
 Author: Claude Code (PostgreSQL sync worker)
 Date: 2025-12-12
-Version: 1.1.0
+Version: 1.2.0 (added rate limiting)
 """
 
 import logging
@@ -20,11 +20,14 @@ import sys
 import time
 import argparse
 import os
+from collections import deque
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
 from services.sync import (
@@ -36,7 +39,8 @@ from services.sync import (
 )
 
 # Setup logging
-log_dir = Path('/opt/alex12060-bot/logs')
+# Use LOG_DIR env var, or 'logs' relative to script location
+log_dir = Path(os.getenv('LOG_DIR', Path(__file__).parent / 'logs'))
 log_dir.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -48,6 +52,71 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """Simple rate limiter for Google Sheets API.
+
+    Google Sheets API limits: 60 read requests per minute per user.
+    We use 40 requests per minute to be safe.
+    """
+
+    def __init__(self, max_requests: int = 40, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = deque()
+
+    def wait_if_needed(self):
+        """Wait if we've exceeded the rate limit."""
+        now = time.time()
+
+        # Remove old requests outside the window
+        while self.requests and self.requests[0] < now - self.window_seconds:
+            self.requests.popleft()
+
+        # If at limit, wait until oldest request expires
+        if len(self.requests) >= self.max_requests:
+            wait_time = self.requests[0] + self.window_seconds - now + 0.5
+            if wait_time > 0:
+                logger.info(f"Rate limit reached, waiting {wait_time:.1f}s...")
+                time.sleep(wait_time)
+                # Clean up again after waiting
+                now = time.time()
+                while self.requests and self.requests[0] < now - self.window_seconds:
+                    self.requests.popleft()
+
+        # Record this request
+        self.requests.append(time.time())
+
+
+def retry_on_quota_error(max_retries: int = 3, base_delay: float = 30.0):
+    """Decorator to retry on Google API quota errors (429)."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except APIError as e:
+                    if e.response.status_code == 429:
+                        last_error = e
+                        if attempt < max_retries:
+                            delay = base_delay * (2 ** attempt)  # Exponential backoff
+                            logger.warning(f"Quota exceeded (attempt {attempt + 1}/{max_retries + 1}), waiting {delay}s...")
+                            time.sleep(delay)
+                        else:
+                            logger.error(f"Quota exceeded after {max_retries + 1} attempts")
+                            raise
+                    else:
+                        raise
+            raise last_error
+        return wrapper
+    return decorator
+
+
+# Global rate limiter instance
+rate_limiter = RateLimiter()
 
 
 class PostgresSyncWorker:
@@ -274,6 +343,8 @@ class PostgresSyncWorker:
                     # Route to appropriate processor
                     processor = self.processors.get(table_name)
                     if processor:
+                        # Apply rate limiting before each sync operation
+                        rate_limiter.wait_if_needed()
                         processor.process(record_id, operation, data)
                     else:
                         logger.warning(f"Unknown table: {table_name}")
@@ -421,7 +492,8 @@ class PostgresSyncWorker:
 def main():
     """Main entry point."""
     # Load environment variables from .env if available
-    env_path = Path('/opt/alex12060-bot/.env')
+    # Load .env from script directory or ENV_FILE path
+    env_path = Path(os.getenv('ENV_FILE', Path(__file__).parent / '.env'))
     if env_path.exists():
         with open(env_path) as f:
             for line in f:

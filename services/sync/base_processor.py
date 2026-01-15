@@ -129,10 +129,8 @@ class BaseSyncProcessor(ABC):
         Returns:
             Cell object or None if not found
         """
-        try:
-            return worksheet.find(str(record_id), in_column=self.id_column)
-        except gspread.exceptions.CellNotFound:
-            return None
+        # gspread 6.x returns None if not found (no exception)
+        return worksheet.find(str(record_id), in_column=self.id_column)
 
     @abstractmethod
     def fetch_record(self, record_id: int) -> Optional[dict]:

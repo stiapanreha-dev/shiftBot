@@ -715,7 +715,7 @@ class PostgresService:
 
             # Convert to SheetsService format
             hourly_wage = float(employee['hourly_wage']) if employee['hourly_wage'] else 15.0
-            sales_commission = float(employee['sales_commission']) if employee['sales_commission'] else 8.0
+            sales_commission = float(employee['sales_commission']) if employee['sales_commission'] else 6.0
 
             result = {
                 'EmployeeID': employee['id'],
@@ -778,15 +778,25 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
+            # Get default tier (Tier C - min_amount = 0)
+            cursor.execute("""
+                SELECT id, percentage FROM base_commissions
+                WHERE min_amount = 0 AND is_active = TRUE
+                LIMIT 1
+            """)
+            default_tier = cursor.fetchone()
+            tier_id = default_tier['id'] if default_tier else 3
+            commission = float(default_tier['percentage']) if default_tier else 6.0
+
             # Set id = telegram_id so foreign keys in shifts work correctly
             cursor.execute("""
-                INSERT INTO employees (id, name, telegram_id, is_active)
-                VALUES (%s, %s, %s, TRUE)
+                INSERT INTO employees (id, name, telegram_id, is_active, base_commission_id, sales_commission)
+                VALUES (%s, %s, %s, TRUE, %s, %s)
                 ON CONFLICT (id) DO NOTHING
-            """, (telegram_id, name, telegram_id))
+            """, (telegram_id, name, telegram_id, tier_id, commission))
 
             conn.commit()
-            logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id})")
+            logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id}, tier_id={tier_id}, commission={commission}%)")
 
             # Invalidate cache
             if self.cache_manager:
