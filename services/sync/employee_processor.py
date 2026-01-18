@@ -36,13 +36,13 @@ class EmployeeSyncProcessor(BaseSyncProcessor):
     def format_row(self, record: dict) -> List[Any]:
         """Format employee for Google Sheets.
 
-        Columns: TelegramID, Name, HourlyWage, SalesCommission, HushBalance, ID
+        Columns: ID, Name, HourlyWage, SalesCommission, Active(ID), HushBalance
         """
         return [
             record['telegram_id'] if record['telegram_id'] else record['id'],
             record['name'],
             float(record['hourly_wage']) if record['hourly_wage'] else 15.0,
             float(record['sales_commission']) if record['sales_commission'] else 6.0,
+            record['id'],  # Active column (stores ID for legacy compatibility)
             float(record['hush_balance']) if record['hush_balance'] else 0,
-            record['id']
         ]
