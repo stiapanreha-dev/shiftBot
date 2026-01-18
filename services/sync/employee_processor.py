@@ -20,13 +20,14 @@ class EmployeeSyncProcessor(BaseSyncProcessor):
 
     @property
     def last_column(self) -> str:
-        return 'E'  # 5 columns
+        return 'F'  # 6 columns (added HushBalance)
 
     def fetch_record(self, record_id: int) -> Optional[dict]:
         """Fetch employee from PostgreSQL."""
         with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, name, telegram_id, hourly_wage, sales_commission
+                SELECT id, name, telegram_id, hourly_wage, sales_commission,
+                       COALESCE(hush_balance, 0) as hush_balance
                 FROM employees
                 WHERE id = %s
             """, (record_id,))
@@ -35,12 +36,13 @@ class EmployeeSyncProcessor(BaseSyncProcessor):
     def format_row(self, record: dict) -> List[Any]:
         """Format employee for Google Sheets.
 
-        Columns: TelegramID, Name, HourlyWage, SalesCommission, ID
+        Columns: TelegramID, Name, HourlyWage, SalesCommission, HushBalance, ID
         """
         return [
             record['telegram_id'] if record['telegram_id'] else record['id'],
             record['name'],
             float(record['hourly_wage']) if record['hourly_wage'] else 15.0,
             float(record['sales_commission']) if record['sales_commission'] else 6.0,
+            float(record['hush_balance']) if record['hush_balance'] else 0,
             record['id']
         ]

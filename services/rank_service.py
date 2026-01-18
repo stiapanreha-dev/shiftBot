@@ -44,7 +44,7 @@ class RankService:
                 "old_rank": "Rookie",
                 "new_rank": "Hustler",
                 "rank_up": True,
-                "bonus": "flat_10",
+                "hush_reward": 150,  # HUSH coins awarded
                 "emoji": "💪"
             }
         """
@@ -68,10 +68,10 @@ class RankService:
                     # Rank changed
                     is_rank_up = self._is_rank_up(old_rank, new_rank)
 
-                    # Select random bonus for new rank
-                    bonus = None
+                    # Select random HUSH reward for new rank
+                    hush_reward = 0
                     if is_rank_up and new_rank != "Rookie":
-                        bonus = self._select_random_bonus(new_rank)
+                        hush_reward = self._select_random_hush_reward(new_rank)
 
                     # Update rank record with new rank and total_sales
                     self.sheets.update_employee_rank(
@@ -93,7 +93,7 @@ class RankService:
                         "old_rank": old_rank,
                         "new_rank": new_rank,
                         "rank_up": is_rank_up,
-                        "bonus": bonus,
+                        "hush_reward": hush_reward,
                         "emoji": emoji
                     }
                 else:
@@ -120,7 +120,7 @@ class RankService:
 
                 # Don't send notification for initial rank (unless it's not Rookie)
                 if new_rank != "Rookie":
-                    bonus = self._select_random_bonus(new_rank)
+                    hush_reward = self._select_random_hush_reward(new_rank)
                     emoji = self._get_rank_emoji(new_rank)
 
                     return {
@@ -128,7 +128,7 @@ class RankService:
                         "old_rank": "Rookie",
                         "new_rank": new_rank,
                         "rank_up": True,
-                        "bonus": bonus,
+                        "hush_reward": hush_reward,
                         "emoji": emoji
                     }
 
@@ -165,7 +165,7 @@ class RankService:
             return False
 
     def _select_random_bonus(self, rank_name: str) -> Optional[str]:
-        """Select random bonus for rank.
+        """Select random bonus for rank (LEGACY - kept for backward compatibility).
 
         Args:
             rank_name: Rank name.
@@ -181,6 +181,78 @@ class RankService:
             return selected
 
         return None
+
+    def _select_random_hush_reward(self, rank_name: str) -> int:
+        """Select random HUSH reward for rank.
+
+        Args:
+            rank_name: Rank name.
+
+        Returns:
+            HUSH coin amount (0 for Rookie).
+        """
+        if rank_name == "Rookie":
+            return 0
+
+        # Get rank_id
+        rank_id = self.sheets.get_rank_id_by_name(rank_name)
+        if not rank_id:
+            logger.warning(f"Rank '{rank_name}' not found")
+            return 0
+
+        # Get HUSH rewards for this rank
+        rewards = self.sheets.get_hush_rank_rewards(rank_id)
+
+        if rewards:
+            # Filter out zeros
+            non_zero_rewards = [r for r in rewards if r > 0]
+            if non_zero_rewards:
+                selected = random.choice(non_zero_rewards)
+                logger.info(f"Selected random HUSH reward for {rank_name}: {selected}")
+                return selected
+
+        return 0
+
+    def apply_hush_reward(
+        self,
+        employee_id: int,
+        rank_name: str,
+        hush_amount: int
+    ) -> Optional[int]:
+        """Apply HUSH reward to employee balance.
+
+        Args:
+            employee_id: Telegram user ID.
+            rank_name: New rank name.
+            hush_amount: HUSH coins to award.
+
+        Returns:
+            Transaction ID or None if no reward.
+        """
+        if hush_amount <= 0:
+            return None
+
+        try:
+            # Get rank_id for transaction record
+            rank_id = self.sheets.get_rank_id_by_name(rank_name)
+
+            # Add HUSH coins to balance
+            tx_id = self.sheets.add_hush_coins(
+                employee_id=employee_id,
+                amount=hush_amount,
+                transaction_type="rank_bonus",
+                description=f"Rank up bonus: {rank_name}",
+                rank_id=rank_id
+            )
+
+            logger.info(f"Applied {hush_amount} HUSH to employee {employee_id} "
+                       f"for reaching {rank_name}. TX ID: {tx_id}")
+
+            return tx_id
+
+        except Exception as e:
+            logger.error(f"Failed to apply HUSH reward: {e}")
+            return None
 
     def _get_rank_emoji(self, rank_name: str) -> str:
         """Get emoji for rank.
@@ -342,7 +414,7 @@ class RankService:
         """
         new_rank = rank_change.get("new_rank", "")
         emoji = rank_change.get("emoji", "")
-        bonus = rank_change.get("bonus", "")
+        hush_reward = rank_change.get("hush_reward", 0)
         rank_up = rank_change.get("rank_up", True)
 
         if rank_up:
@@ -354,13 +426,11 @@ class RankService:
             message += f"Now you're {new_rank} {emoji}\n\n"
             message += f"{rank_text}\n\n"
 
-            if bonus and bonus not in ["none", "paid_day_off", "telegram_premium"]:
-                bonus_description = self._format_bonus_description(bonus)
-                message += f"As bonus you get:\n\n{bonus_description}"
-            elif bonus == "paid_day_off":
-                message += "As bonus you get:\n\n🏖️ Pick a Date for Paid Day Off"
-            elif bonus == "telegram_premium":
-                message += "As bonus you get:\n\n⭐ Telegram Premium for 3 months"
+            if hush_reward > 0:
+                # Convert HUSH to dollars (100 HUSH = $1)
+                dollar_value = hush_reward / 100
+                message += f"As bonus you get:\n\n"
+                message += f"🪙 +{hush_reward} HUSH (${dollar_value:.2f})"
 
         else:
             # Rank down message
@@ -406,7 +476,7 @@ class RankService:
         return "🎁 Special bonus"
 
     def get_all_ranks_info(self) -> str:
-        """Get formatted information about all ranks.
+        """Get formatted information about all ranks with HUSH rewards.
 
         Returns:
             Formatted string with all ranks info.
@@ -417,42 +487,35 @@ class RankService:
             return "No ranks information available."
 
         message = "🏆 Rank System\n\n"
+        message += "💰 100 HUSH = $1\n\n"
 
         for rank in ranks:
             # Support both SheetsService and PostgresService formats
-            rank_name = rank.get("Rank Name") or rank.get("RankName") or rank.get("rank_name") or ""
-            min_amt = rank.get("Min Amount") or rank.get("MinTotalSales") or rank.get("min_total_sales") or 0
-            max_amt = rank.get("Max Amount") or rank.get("MaxTotalSales") or rank.get("max_total_sales") or 999999
+            rank_name = rank.get("Rank Name") or rank.get("RankName") or rank.get("rank_name") or rank.get("name") or ""
+            rank_id = rank.get("id") or rank.get("ID")
+            min_amt = rank.get("Min Amount") or rank.get("MinTotalSales") or rank.get("min_total_sales") or rank.get("min_amount") or 0
+            max_amt = rank.get("Max Amount") or rank.get("MaxTotalSales") or rank.get("max_total_sales") or rank.get("max_amount") or 999999
             emoji = rank.get("Emoji") or rank.get("emoji") or ""
 
             # Format amount range
-            if max_amt >= 999999:
-                amount_range = f"${int(min_amt):,}+"
+            if float(max_amt) >= 999999:
+                amount_range = f"${int(float(min_amt)):,}+"
             else:
-                amount_range = f"${int(min_amt):,} – ${int(max_amt):,}"
+                amount_range = f"${int(float(min_amt)):,} – ${int(float(max_amt)):,}"
 
             message += f"{rank_name} {emoji} ({amount_range})\n"
-
-            # Format bonuses
-            # Support both formats: individual Bonus 1/2/3 or comma-separated Bonuses
-            bonuses_str = rank.get("Bonuses") or ""
-            if bonuses_str:
-                bonuses = [b.strip() for b in bonuses_str.split(",") if b.strip()]
-            else:
-                bonuses = [
-                    rank.get("Bonus 1"),
-                    rank.get("Bonus 2"),
-                    rank.get("Bonus 3")
-                ]
-                bonuses = [b for b in bonuses if b]
 
             if rank_name == "Rookie":
                 message += "No bonuses — this is the baseline. Everyone starts here.\n"
             else:
-                for idx, bonus in enumerate(bonuses, 1):
-                    if bonus and bonus != "none":
-                        bonus_desc = self._format_bonus_description(bonus)
-                        message += f"{idx}. {bonus_desc}\n"
+                # Get HUSH rewards for this rank
+                if rank_id:
+                    rewards = self.sheets.get_hush_rank_rewards(rank_id)
+                    if rewards:
+                        non_zero = [r for r in rewards if r > 0]
+                        if non_zero:
+                            rewards_str = ", ".join([f"🪙 {r}" for r in non_zero])
+                            message += f"Possible HUSH rewards: {rewards_str}\n"
 
             message += "\n"
 

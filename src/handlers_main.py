@@ -467,10 +467,11 @@ async def check_and_notify_rank(
             # Save keyboard message ID
             context.user_data["last_keyboard_message_id"] = sent_msg.message_id
 
-            # Apply bonus if available
-            bonus = rank_change.get("bonus")
-            if bonus:
-                rank_service.apply_rank_bonus(user_id, bonus, shift_id)
+            # Apply HUSH reward if available
+            hush_reward = rank_change.get("hush_reward")
+            if hush_reward and hush_reward > 0:
+                new_rank = rank_change.get("new_rank", "")
+                rank_service.apply_hush_reward(user_id, new_rank, hush_reward)
 
             # Mark as notified
             sheets.mark_rank_notified(user_id, year, month)
@@ -1158,9 +1159,14 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Total with bonus
         total_with_bonus = total_made_since_payday + bonus_amount
 
+        # Get HUSH balance
+        hush_balance = sheets.get_hush_balance(user.id)
+        hush_dollar_value = float(hush_balance) / 100
+
         # Format message
         message = f"📊 Your Statistics\n\n"
         message += f"🏆 Rank: {current_rank} {rank_emoji}\n"
+        message += f"🪙 HUSH Balance: {int(hush_balance)} (${hush_dollar_value:.2f})\n"
         message += f"💰 Total sales this month: ${total_sales_month:.2f}\n"
         message += f"💵 Total made since last pay day: ${total_with_bonus:.2f}\n"
         message += f"✨ Current applied bonus: +{bonus_count}% (${bonus_amount:.2f})\n"
@@ -1218,6 +1224,88 @@ async def show_ranks_info(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"[ERROR] Failed to show ranks info for user {user.id}: {e}", exc_info=True)
         sent_msg = await query.message.reply_text(
             "❌ Error loading ranks information.\n"
+            "Please try again later.",
+            reply_markup=start_menu_keyboard()
+        )
+        context.user_data["last_keyboard_message_id"] = sent_msg.message_id
+        return START
+
+
+async def show_hush_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show HUSH coin balance and transaction history.
+
+    Args:
+        update: Telegram update.
+        context: Bot context.
+
+    Returns:
+        Start state.
+    """
+    query = update.callback_query
+    await query.answer()
+    await remove_keyboard(query)
+
+    user = update.effective_user
+
+    try:
+        logger.info(f"[HUSH] User {user.id} viewing HUSH balance")
+
+        sheets = sheets_service
+
+        # Get HUSH balance
+        balance = sheets.get_hush_balance(user.id)
+        dollar_value = float(balance) / 100
+
+        # Get recent transactions
+        transactions = sheets.get_hush_transactions(user.id, limit=5)
+
+        # Format message
+        message = "🪙 HUSH Balance\n\n"
+        message += f"Current balance: {int(balance)} HUSH (${dollar_value:.2f})\n\n"
+
+        if transactions:
+            message += "📋 Recent transactions:\n"
+            for tx in transactions:
+                amount = int(tx.get('amount', 0))
+                tx_type = tx.get('transaction_type', '')
+                rank_name = tx.get('rank_name', '')
+                created_at = tx.get('created_at', '')
+
+                # Format date
+                if created_at:
+                    if hasattr(created_at, 'strftime'):
+                        date_str = created_at.strftime('%d.%m.%Y')
+                    else:
+                        date_str = str(created_at)[:10]
+                else:
+                    date_str = ''
+
+                # Format transaction line
+                if amount >= 0:
+                    sign = "+"
+                else:
+                    sign = ""
+
+                if tx_type == 'rank_bonus' and rank_name:
+                    message += f"  {sign}{amount} HUSH - {rank_name} ({date_str})\n"
+                elif tx_type == 'withdrawal':
+                    message += f"  {sign}{amount} HUSH - Withdrawal ({date_str})\n"
+                else:
+                    message += f"  {sign}{amount} HUSH ({date_str})\n"
+        else:
+            message += "No transactions yet.\n"
+
+        message += "\n💰 100 HUSH = $1"
+
+        sent_msg = await query.message.reply_text(message, reply_markup=start_menu_keyboard())
+        context.user_data["last_keyboard_message_id"] = sent_msg.message_id
+
+        return START
+
+    except Exception as e:
+        logger.error(f"[ERROR] Failed to show HUSH balance for user {user.id}: {e}", exc_info=True)
+        sent_msg = await query.message.reply_text(
+            "❌ Error loading HUSH balance.\n"
             "Please try again later.",
             reply_markup=start_menu_keyboard()
         )
@@ -1321,12 +1409,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             context.user_data["last_keyboard_message_id"] = sent_msg.message_id
             return START
 
-    # Statistics and Ranks
+    # Statistics, Ranks and HUSH Balance
     if data == "STATISTICS":
         return await show_statistics(update, context)
 
     if data == "RANKS":
         return await show_ranks_info(update, context)
+
+    if data == "HUSH_BALANCE":
+        return await show_hush_balance(update, context)
 
     # Create shift flow
     if data == "CREATE_SHIFT":
@@ -1480,12 +1571,13 @@ async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYP
             rank_change = rank_service.check_and_update_rank(emp_id, year, month)
             updated += 1
 
-            # If rank changed and there's a bonus
+            # If rank changed and there's a HUSH reward
             if rank_change and rank_change.get("changed"):
-                bonus = rank_change.get("bonus")
-                if bonus:
-                    # Apply bonus (will be used on next shift)
-                    rank_service.apply_rank_bonus(emp_id, bonus)
+                hush_reward = rank_change.get("hush_reward", 0)
+                if hush_reward and hush_reward > 0:
+                    # Apply HUSH reward
+                    new_rank = rank_change.get("new_rank", "")
+                    rank_service.apply_hush_reward(emp_id, new_rank, hush_reward)
 
                 # Track for report
                 rank_changes.append({
@@ -1493,7 +1585,7 @@ async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYP
                     "old_rank": rank_change.get("old_rank"),
                     "new_rank": rank_change.get("new_rank"),
                     "rank_up": rank_change.get("rank_up"),
-                    "bonus": bonus
+                    "hush_reward": hush_reward
                 })
 
         # Build report message
@@ -1503,8 +1595,8 @@ async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYP
             report += "📊 Rank changes:\n"
             for change in rank_changes:
                 direction = "⬆️" if change["rank_up"] else "⬇️"
-                bonus_text = f" | Bonus: {change['bonus']}" if change["bonus"] else ""
-                report += f"{direction} {change['employee_id']}: {change['old_rank']} → {change['new_rank']}{bonus_text}\n"
+                hush_text = f" | 🪙 +{change['hush_reward']} HUSH" if change.get("hush_reward") else ""
+                report += f"{direction} {change['employee_id']}: {change['old_rank']} → {change['new_rank']}{hush_text}\n"
         else:
             report += "No rank changes detected."
 
@@ -1513,4 +1605,73 @@ async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     except Exception as e:
         logger.error(f"[ADMIN] Failed to recalculate ranks: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def withdraw_hush_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Withdraw HUSH coins from employee balance (admin only).
+
+    Usage: /withdraw_hush <employee_id> <amount> [reason]
+
+    Args:
+        update: Telegram update.
+        context: Bot context.
+    """
+    user = update.effective_user
+
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Access denied. Admin only.")
+        return
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /withdraw_hush <employee_id> <amount> [reason]\n"
+            "Example: /withdraw_hush 123456789 500 Monthly payout"
+        )
+        return
+
+    try:
+        employee_id = int(args[0])
+        amount = int(args[1])
+        reason = " ".join(args[2:]) if len(args) > 2 else "Admin withdrawal"
+
+        if amount <= 0:
+            await update.message.reply_text("❌ Amount must be positive.")
+            return
+
+        sheets = sheets_service
+
+        # Check current balance
+        current_balance = sheets.get_hush_balance(employee_id)
+
+        if current_balance < amount:
+            await update.message.reply_text(
+                f"❌ Insufficient balance.\n"
+                f"Employee {employee_id} has {int(current_balance)} HUSH, "
+                f"requested {amount} HUSH."
+            )
+            return
+
+        # Perform withdrawal
+        tx_id = sheets.withdraw_hush_coins(employee_id, amount, reason)
+
+        new_balance = sheets.get_hush_balance(employee_id)
+        dollar_value = amount / 100
+
+        await update.message.reply_text(
+            f"✅ Withdrawal successful!\n\n"
+            f"Employee: {employee_id}\n"
+            f"Amount: {amount} HUSH (${dollar_value:.2f})\n"
+            f"Reason: {reason}\n"
+            f"New balance: {int(new_balance)} HUSH\n"
+            f"TX ID: {tx_id}"
+        )
+
+        logger.info(f"[ADMIN] User {user.id} withdrew {amount} HUSH from {employee_id}")
+
+    except ValueError as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+    except Exception as e:
+        logger.error(f"[ADMIN] Failed to withdraw HUSH: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Error: {e}")

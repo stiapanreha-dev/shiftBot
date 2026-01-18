@@ -132,6 +132,7 @@ def start_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Edit shift", callback_data="EDIT_SHIFT")],
         [InlineKeyboardButton("📊 Statistics", callback_data="STATISTICS")],
         [InlineKeyboardButton("🏆 Ranks", callback_data="RANKS")],
+        [InlineKeyboardButton("🪙 HUSH Balance", callback_data="HUSH_BALANCE")],
     ])
 
 

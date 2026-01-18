@@ -6,6 +6,7 @@ from .bonus_processor import BonusSyncProcessor
 from .rank_processor import RankSyncProcessor
 from .employee_processor import EmployeeSyncProcessor
 from .fortnight_processor import FortnightSyncProcessor
+from .hush_processor import HushTransactionSyncProcessor
 
 __all__ = [
     'BaseSyncProcessor',
@@ -14,4 +15,5 @@ __all__ = [
     'RankSyncProcessor',
     'EmployeeSyncProcessor',
     'FortnightSyncProcessor',
+    'HushTransactionSyncProcessor',
 ]

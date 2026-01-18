@@ -36,6 +36,7 @@ from services.sync import (
     RankSyncProcessor,
     EmployeeSyncProcessor,
     FortnightSyncProcessor,
+    HushTransactionSyncProcessor,
 )
 
 # Setup logging
@@ -235,6 +236,7 @@ class PostgresSyncWorker:
             'employee_ranks': RankSyncProcessor(self.spreadsheet, self.db_conn),
             'employees': EmployeeSyncProcessor(self.spreadsheet, self.db_conn),
             'employee_fortnights': FortnightSyncProcessor(self.spreadsheet, self.db_conn),
+            'hush_transactions': HushTransactionSyncProcessor(self.spreadsheet, self.db_conn),
         }
         logger.info(f"Initialized {len(self.processors)} sync processors")
 

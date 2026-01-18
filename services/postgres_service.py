@@ -2221,6 +2221,265 @@ class PostgresService:
             cursor.close()
             conn.close()
 
+    # ========== HUSH Coin Methods ==========
+
+    def get_hush_balance(self, employee_id: int) -> Decimal:
+        """Get HUSH coin balance for employee.
+
+        Args:
+            employee_id: Employee/Telegram ID
+
+        Returns:
+            HUSH balance (Decimal)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT COALESCE(hush_balance, 0) as balance
+                FROM employees
+                WHERE id = %s OR telegram_id = %s
+            """, (employee_id, employee_id))
+
+            result = cursor.fetchone()
+            return Decimal(str(result['balance'])) if result else Decimal('0')
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def add_hush_coins(
+        self,
+        employee_id: int,
+        amount: int,
+        transaction_type: str,
+        description: str,
+        rank_id: int = None
+    ) -> int:
+        """Add HUSH coins to employee balance.
+
+        Args:
+            employee_id: Employee/Telegram ID
+            amount: HUSH amount to add
+            transaction_type: Type of transaction (rank_bonus, adjustment, manual_credit)
+            description: Transaction description
+            rank_id: Related rank ID (for rank_bonus type)
+
+        Returns:
+            Transaction ID
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Get current balance
+            cursor.execute("""
+                SELECT id, COALESCE(hush_balance, 0) as balance
+                FROM employees
+                WHERE id = %s OR telegram_id = %s
+            """, (employee_id, employee_id))
+
+            result = cursor.fetchone()
+            if not result:
+                raise ValueError(f"Employee {employee_id} not found")
+
+            emp_id = result['id']
+            current_balance = Decimal(str(result['balance']))
+            new_balance = current_balance + Decimal(amount)
+
+            # Update employee balance
+            cursor.execute("""
+                UPDATE employees
+                SET hush_balance = %s, updated_at = now()
+                WHERE id = %s
+            """, (new_balance, emp_id))
+
+            # Create transaction record
+            cursor.execute("""
+                INSERT INTO hush_transactions
+                (employee_id, amount, transaction_type, description, rank_id, balance_after)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (emp_id, amount, transaction_type, description, rank_id, new_balance))
+
+            transaction_id = cursor.fetchone()['id']
+            conn.commit()
+
+            logger.info(f"Added {amount} HUSH to employee {employee_id}. "
+                       f"New balance: {new_balance}. TX ID: {transaction_id}")
+
+            return transaction_id
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error adding HUSH coins: {e}")
+            raise
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def withdraw_hush_coins(
+        self,
+        employee_id: int,
+        amount: int,
+        description: str
+    ) -> int:
+        """Withdraw HUSH coins from employee balance.
+
+        Args:
+            employee_id: Employee/Telegram ID
+            amount: HUSH amount to withdraw (positive number)
+            description: Reason for withdrawal
+
+        Returns:
+            Transaction ID
+
+        Raises:
+            ValueError: If insufficient balance
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Get current balance
+            cursor.execute("""
+                SELECT id, COALESCE(hush_balance, 0) as balance
+                FROM employees
+                WHERE id = %s OR telegram_id = %s
+            """, (employee_id, employee_id))
+
+            result = cursor.fetchone()
+            if not result:
+                raise ValueError(f"Employee {employee_id} not found")
+
+            emp_id = result['id']
+            current_balance = Decimal(str(result['balance']))
+
+            if current_balance < amount:
+                raise ValueError(
+                    f"Insufficient HUSH balance. "
+                    f"Current: {current_balance}, requested: {amount}"
+                )
+
+            new_balance = current_balance - Decimal(amount)
+
+            # Update employee balance
+            cursor.execute("""
+                UPDATE employees
+                SET hush_balance = %s, updated_at = now()
+                WHERE id = %s
+            """, (new_balance, emp_id))
+
+            # Create transaction record (negative amount for withdrawal)
+            cursor.execute("""
+                INSERT INTO hush_transactions
+                (employee_id, amount, transaction_type, description, balance_after)
+                VALUES (%s, %s, 'withdrawal', %s, %s)
+                RETURNING id
+            """, (emp_id, -amount, description, new_balance))
+
+            transaction_id = cursor.fetchone()['id']
+            conn.commit()
+
+            logger.info(f"Withdrawn {amount} HUSH from employee {employee_id}. "
+                       f"New balance: {new_balance}. TX ID: {transaction_id}")
+
+            return transaction_id
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error withdrawing HUSH coins: {e}")
+            raise
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_hush_transactions(
+        self,
+        employee_id: int,
+        limit: int = 10
+    ) -> List[Dict]:
+        """Get HUSH transaction history for employee.
+
+        Args:
+            employee_id: Employee/Telegram ID
+            limit: Max number of transactions to return
+
+        Returns:
+            List of transaction dicts
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT ht.*, r.name as rank_name
+                FROM hush_transactions ht
+                LEFT JOIN ranks r ON r.id = ht.rank_id
+                WHERE ht.employee_id = %s
+                ORDER BY ht.created_at DESC
+                LIMIT %s
+            """, (employee_id, limit))
+
+            return [dict(r) for r in cursor.fetchall()]
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_hush_rank_rewards(self, rank_id: int) -> List[int]:
+        """Get HUSH reward amounts for a rank.
+
+        Args:
+            rank_id: Rank ID
+
+        Returns:
+            List of 3 reward amounts (positions 1, 2, 3)
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT reward_amount
+                FROM hush_rank_rewards
+                WHERE rank_id = %s
+                ORDER BY position
+            """, (rank_id,))
+
+            return [row['reward_amount'] for row in cursor.fetchall()]
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_rank_id_by_name(self, rank_name: str) -> Optional[int]:
+        """Get rank ID by name.
+
+        Args:
+            rank_name: Rank name (e.g., 'Hustler')
+
+        Returns:
+            Rank ID or None
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                SELECT id FROM ranks WHERE name = %s AND is_active = TRUE
+            """, (rank_name,))
+
+            result = cursor.fetchone()
+            return result['id'] if result else None
+
+        finally:
+            cursor.close()
+            conn.close()
+
 
 # For backward compatibility and testing
 if __name__ == "__main__":
