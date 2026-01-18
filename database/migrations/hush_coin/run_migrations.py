@@ -10,7 +10,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 import psycopg2
-from config import DB_CONFIG
+from config import Config
 
 
 def run_migrations():
@@ -21,7 +21,7 @@ def run_migrations():
         if f.name.startswith(("001", "002", "003", "004"))
     ])
 
-    conn = psycopg2.connect(**DB_CONFIG)
+    conn = psycopg2.connect(**Config.get_db_params())
     conn.autocommit = True
     cursor = conn.cursor()
 
