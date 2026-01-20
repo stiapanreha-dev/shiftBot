@@ -580,7 +580,17 @@ async def handle_finish_shift(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"Hit it and you earn +1% salary boost! Keep grinding 💪\n\n"
             f"Current bonus: +{bonus_count}% ✨"
         )
-        await query.message.reply_text(target_msg)
+        sent_msg = await query.message.reply_text(target_msg)
+
+        # Try to pin the target message
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=query.message.chat_id,
+                message_id=sent_msg.message_id,
+                disable_notification=True
+            )
+        except Exception as pin_error:
+            logger.debug(f"Could not pin target message: {pin_error}")
     except Exception as e:
         logger.warning(f"[TG_ERROR] Failed to send target notification: {e}")
 

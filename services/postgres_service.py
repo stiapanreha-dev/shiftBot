@@ -928,6 +928,8 @@ class PostgresService:
                 bonus_codes = [b['bonus_code'] for b in bonuses]
 
                 result.append({
+                    'id': rank['id'],
+                    'ID': rank['id'],
                     'RankName': rank['name'],
                     'rank_name': rank['name'],
                     'BonusPct': 0,  # Ranks don't have percentage in this schema
