@@ -253,10 +253,14 @@ class PostgresSyncWorker:
 
             with self.db_conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT id, table_name, record_id, operation, data, created_at
+                    SELECT id, table_name, record_id, operation, data, created_at, attempts
                     FROM sync_queue
                     WHERE status = 'pending'
-                    ORDER BY created_at ASC
+                       OR (status = 'failed' AND attempts < 5
+                           AND processed_at < NOW() - INTERVAL '2 minutes')
+                    ORDER BY
+                        CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+                        created_at ASC
                     LIMIT 100
                 """)
                 return cur.fetchall()
@@ -285,7 +289,7 @@ class PostgresSyncWorker:
             self.db_conn.rollback()
 
     def _mark_failed(self, sync_id: int, error_message: str):
-        """Mark a sync record as failed.
+        """Mark a sync record as failed and increment attempts.
 
         Args:
             sync_id: Sync queue record ID
@@ -297,6 +301,7 @@ class PostgresSyncWorker:
                     UPDATE sync_queue
                     SET status = 'failed',
                         error_message = %s,
+                        attempts = attempts + 1,
                         processed_at = NOW()
                     WHERE id = %s
                 """, (error_message[:500], sync_id))  # Limit error message length
