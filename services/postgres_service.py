@@ -1776,13 +1776,13 @@ class PostgresService:
     # ========== Rolling Average & Bonus Counter ==========
 
     def calculate_rolling_average(self, employee_id: int, shift_date: str) -> Decimal:
-        """Calculate weighted rolling average of total_sales for last 7 calendar days.
+        """Calculate weighted rolling average of total_sales for last 7 SHIFTS.
 
         Formula: Σ(i / Σ(1..N)) × total_sales_i = Σ(i × sales_i) / Σ(1..N)
-        where i = position (1 = oldest, N = newest)
+        where i = position (1 = oldest, N = newest), N = min(7, total_shifts)
 
         Special cases:
-        - 0 shifts in last 7 days → rolling_average = 0 (bonus_counter will be FALSE)
+        - 0 previous shifts → rolling_average = 0 (bonus_counter will be FALSE)
         - 0 < N < 7 shifts → use formula with available shifts
 
         Args:
@@ -1790,7 +1790,7 @@ class PostgresService:
             shift_date: Shift date (YYYY-MM-DD or YYYY/MM/DD)
 
         Returns:
-            Weighted average (0 if no shifts in last 7 days)
+            Weighted average (0 if no previous shifts)
         """
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -1799,21 +1799,24 @@ class PostgresService:
             # Parse shift date
             shift_date_clean = DateFormatter.to_db_date(shift_date)
 
-            # Get shifts from last 7 calendar days (excluding current date)
+            # Get last 7 SHIFTS (not days) before current date, sorted oldest to newest
             cursor.execute("""
-                SELECT total_sales
-                FROM shifts
-                WHERE employee_id = %s
-                  AND date >= %s::date - INTERVAL '7 days'
-                  AND date < %s::date
-                  AND total_sales IS NOT NULL
+                SELECT total_sales FROM (
+                    SELECT total_sales, date, clock_in
+                    FROM shifts
+                    WHERE employee_id = %s
+                      AND date < %s::date
+                      AND total_sales IS NOT NULL
+                    ORDER BY date DESC, clock_in DESC
+                    LIMIT 7
+                ) sub
                 ORDER BY date ASC, clock_in ASC
-            """, (employee_id, shift_date_clean, shift_date_clean))
+            """, (employee_id, shift_date_clean))
 
             shifts = cursor.fetchall()
 
-            # If no shifts in last 7 days, return 0 (not None)
-            # This ensures bonus_counter = FALSE for inactive employees
+            # If no previous shifts, return 0 (not None)
+            # This ensures bonus_counter = FALSE for new employees
             if not shifts:
                 return Decimal('0')
 
@@ -1854,7 +1857,7 @@ class PostgresService:
         """Calculate rolling average target for tomorrow (including today's shift).
 
         This calculates what the rolling_average will be tomorrow, so the employee
-        knows what target they need to hit.
+        knows what target they need to hit. Uses last 7 SHIFTS including today.
 
         Args:
             employee_id: Employee ID
@@ -1870,17 +1873,20 @@ class PostgresService:
             # Parse date
             today_clean = DateFormatter.to_db_date(today_date)
 
-            # Get shifts from last 7 days INCLUDING today
-            # Tomorrow's rolling_average = shifts from (today - 6 days) to today
+            # Get last 7 SHIFTS INCLUDING today, sorted oldest to newest
+            # Tomorrow's rolling_average = last 7 shifts up to and including today
             cursor.execute("""
-                SELECT total_sales
-                FROM shifts
-                WHERE employee_id = %s
-                  AND date >= %s::date - INTERVAL '6 days'
-                  AND date <= %s::date
-                  AND total_sales IS NOT NULL
+                SELECT total_sales FROM (
+                    SELECT total_sales, date, clock_in
+                    FROM shifts
+                    WHERE employee_id = %s
+                      AND date <= %s::date
+                      AND total_sales IS NOT NULL
+                    ORDER BY date DESC, clock_in DESC
+                    LIMIT 7
+                ) sub
                 ORDER BY date ASC, clock_in ASC
-            """, (employee_id, today_clean, today_clean))
+            """, (employee_id, today_clean))
 
             shifts = cursor.fetchall()
 
