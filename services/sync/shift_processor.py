@@ -20,7 +20,7 @@ class ShiftSyncProcessor(BaseSyncProcessor):
 
     @property
     def last_column(self) -> str:
-        return 'S'  # 19 columns (added Model D)
+        return 'T'  # 20 columns (added Model E - Madison)
 
     def fetch_record(self, record_id: int) -> Optional[dict]:
         """Fetch shift with product data from PostgreSQL."""
@@ -45,7 +45,8 @@ class ShiftSyncProcessor(BaseSyncProcessor):
                     COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 1), 0) as model_a,
                     COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 2), 0) as model_b,
                     COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 3), 0) as model_c,
-                    COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 9), 0) as model_d
+                    COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 9), 0) as model_d,
+                    COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 11), 0) as model_e
                 FROM shifts s
                 WHERE s.id = %s
             """, (record_id,))
@@ -56,7 +57,7 @@ class ShiftSyncProcessor(BaseSyncProcessor):
 
         Columns: ID, Date, EmployeeID, EmployeeName, ClockIn, ClockOut, WorkedHours,
                  TotalSales, NetSales, CommissionPct, TotalHourly, Commissions, TotalMade,
-                 RollingAverage, BonusCounter, ModelA, ModelB, ModelC, ModelD
+                 RollingAverage, BonusCounter, ModelA, ModelB, ModelC, ModelD, ModelE
         """
         return [
             record['id'],
@@ -78,4 +79,5 @@ class ShiftSyncProcessor(BaseSyncProcessor):
             float(record['model_b']) if record['model_b'] else 0,
             float(record['model_c']) if record['model_c'] else 0,
             float(record['model_d']) if record['model_d'] else 0,
+            float(record['model_e']) if record['model_e'] else 0,
         ]
