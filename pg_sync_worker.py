@@ -180,6 +180,7 @@ class PostgresSyncWorker:
                 except Exception:
                     pass
             self.db_conn = psycopg2.connect(**self.db_params)
+            self._update_processor_connections()
             logger.info("Database reconnected successfully")
             return True
         except Exception as e:
@@ -192,10 +193,17 @@ class PostgresSyncWorker:
         Returns:
             True if connection is alive, False otherwise
         """
-        if self.db_conn is None or self.db_conn.closed:
-            logger.warning("Database connection lost, reconnecting...")
-            return self._reconnect_db()
-        return True
+        if self.db_conn is not None and not self.db_conn.closed:
+            try:
+                cur = self.db_conn.cursor()
+                cur.execute('SELECT 1')
+                cur.close()
+                return True
+            except Exception:
+                logger.warning("DB connection check failed, reconnecting...")
+        else:
+            logger.warning("DB connection lost, reconnecting...")
+        return self._reconnect_db()
 
     def _init_connections(self) -> bool:
         """Initialize database and Google Sheets connections.
@@ -239,6 +247,11 @@ class PostgresSyncWorker:
             'hush_transactions': HushTransactionSyncProcessor(self.spreadsheet, self.db_conn),
         }
         logger.info(f"Initialized {len(self.processors)} sync processors")
+
+    def _update_processor_connections(self):
+        """Propagate new db_conn to all sync processors after reconnect."""
+        for name, processor in self.processors.items():
+            processor.db_conn = self.db_conn
 
     def _get_pending_syncs(self) -> list:
         """Get all pending sync records from sync_queue.
