@@ -141,7 +141,12 @@ class PostgresSyncWorker:
             'port': int(os.getenv('DB_PORT', 5432)),
             'database': os.getenv('DB_NAME', 'alex12060'),
             'user': os.getenv('DB_USER', 'alex12060_user'),
-            'password': os.getenv('DB_PASSWORD', 'alex12060_pass')
+            'password': os.getenv('DB_PASSWORD', 'alex12060_pass'),
+            'connect_timeout': 10,
+            'keepalives': 1,
+            'keepalives_idle': 60,
+            'keepalives_interval': 15,
+            'keepalives_count': 4,
         }
 
         # Google Sheets parameters
@@ -324,6 +329,62 @@ class PostgresSyncWorker:
             logger.error(f"Failed to mark sync {sync_id} as failed: {e}")
             self.db_conn.rollback()
 
+    def _reset_stale_failed(self):
+        """Reset permanently failed records for retry after cooldown."""
+        try:
+            if not self._ensure_db_connection():
+                return
+            with self.db_conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE sync_queue
+                    SET status = 'pending', attempts = 0, error_message = NULL
+                    WHERE status = 'failed' AND attempts >= 5
+                      AND processed_at < NOW() - INTERVAL '30 minutes'
+                """)
+                count = cur.rowcount
+            self.db_conn.commit()
+            if count > 0:
+                logger.warning(f"Auto-reset {count} permanently failed sync records")
+        except Exception as e:
+            logger.error(f"Failed to reset stale records: {e}")
+            try:
+                self.db_conn.rollback()
+            except Exception:
+                pass
+
+    def _check_queue_health(self):
+        """Alert admins if sync queue backlog is growing."""
+        try:
+            if not self._ensure_db_connection():
+                return
+            with self.db_conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM sync_queue WHERE status = 'pending'")
+                pending = cur.fetchone()[0]
+                cur.execute("SELECT count(*) FROM sync_queue WHERE status = 'failed' AND attempts >= 5")
+                stuck = cur.fetchone()[0]
+
+            if pending > 50 or stuck > 10:
+                self._send_admin_alert(
+                    f"⚠️ Sync queue alert!\nPending: {pending}\nStuck (failed>=5): {stuck}"
+                )
+        except Exception as e:
+            logger.error(f"Queue health check failed: {e}")
+
+    def _send_admin_alert(self, message: str):
+        """Send alert to first admin via Telegram."""
+        import requests
+        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        admin_id = 7867347055
+        if bot_token:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={"chat_id": admin_id, "text": message},
+                    timeout=10
+                )
+            except Exception:
+                pass
+
     def _perform_sync(self) -> bool:
         """Perform one sync cycle.
 
@@ -336,6 +397,9 @@ class PostgresSyncWorker:
             logger.info("=" * 70)
 
             start_time = time.time()
+
+            # Reset permanently failed records before fetching pending
+            self._reset_stale_failed()
 
             # Get pending syncs
             pending_syncs = self._get_pending_syncs()
@@ -391,6 +455,9 @@ class PostgresSyncWorker:
             logger.info(f"Sync cycle #{self.sync_count} completed in {duration:.2f}s")
             logger.info(f"Synced: {synced_count}, Failed: {failed_count}")
             logger.info("=" * 70)
+
+            # Check queue health and alert if backlog is growing
+            self._check_queue_health()
 
             return True
 
