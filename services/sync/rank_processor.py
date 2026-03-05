@@ -59,10 +59,10 @@ class RankSyncProcessor(BaseSyncProcessor):
             record['employee_id'],
             record['year'],
             record['month'],
-            record['current_rank'] if record['current_rank'] else '',
-            record['previous_rank'] if record['previous_rank'] else '',
-            record['updated_at'].strftime('%Y-%m-%d %H:%M:%S') if record['updated_at'] else '',
-            'TRUE' if record['notified'] else 'FALSE'
+            self._safe_str(record['current_rank']),
+            self._safe_str(record['previous_rank']),
+            self._format_dt(record['updated_at']),
+            self._bool_str(record['notified']),
         ]
 
     def _handle_upsert(self, worksheet: gspread.Worksheet, record_id: int) -> bool:
@@ -95,5 +95,21 @@ class RankSyncProcessor(BaseSyncProcessor):
         else:
             worksheet.append_row(row_data)
             logger.info(f"Inserted {self.table_name} {record_id} to Google Sheets")
+
+            # Deduplication check: verify no duplicate was created by concurrent write
+            all_values_after = worksheet.get_all_values()
+            dup_rows = []
+            for idx, row in enumerate(all_values_after[1:], start=2):
+                if (len(row) >= 3 and
+                    str(row[0]) == str(record['employee_id']) and
+                    str(row[1]) == str(record['year']) and
+                    str(row[2]) == str(record['month'])):
+                    dup_rows.append(idx)
+
+            if len(dup_rows) > 1:
+                # Keep the last row, delete earlier duplicates
+                for dup_row in sorted(dup_rows[:-1], reverse=True):
+                    worksheet.delete_rows(dup_row)
+                logger.warning(f"Removed {len(dup_rows) - 1} duplicate row(s) for {self.table_name} {record_id}")
 
         return True

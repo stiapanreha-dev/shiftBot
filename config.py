@@ -36,6 +36,13 @@ class Config:
     COMMISSION_RATE: float = float(os.getenv("COMMISSION_RATE", "0.20"))
     PAYOUT_RATE: float = float(os.getenv("PAYOUT_RATE", "1.00"))
 
+    # Admin IDs
+    ADMIN_IDS: List[int] = [
+        int(x.strip()) for x in os.getenv(
+            "ADMIN_IDS", "7867347055,2125295046,8152358885,7367062056"
+        ).split(",") if x.strip()
+    ]
+
     # Time
     USE_FIXED_UTC_MINUS_5: bool = os.getenv("USE_FIXED_UTC_MINUS_5", "false").lower() == "true"
     DATE_FORMAT: str = "%Y/%m/%d %H:%M:%S"
@@ -60,6 +67,27 @@ class Config:
 
         if not cls.PRODUCTS:
             raise ValueError("PRODUCTS must contain at least one product")
+
+    @classmethod
+    def validate_sync(cls) -> None:
+        """Validate sync worker configuration.
+
+        Raises:
+            ValueError: If any required sync parameter is missing.
+        """
+        cls.validate()
+
+        sync_required = {
+            "SPREADSHEET_ID": cls.SPREADSHEET_ID,
+        }
+
+        missing = [name for name, value in sync_required.items() if not value]
+
+        if missing:
+            raise ValueError(f"Missing required sync environment variables: {', '.join(missing)}")
+
+        if not os.path.exists(cls.GOOGLE_SA_JSON):
+            raise ValueError(f"Google SA credentials file not found: {cls.GOOGLE_SA_JSON}")
 
     @classmethod
     def get_db_params(cls) -> dict:

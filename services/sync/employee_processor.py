@@ -41,8 +41,8 @@ class EmployeeSyncProcessor(BaseSyncProcessor):
         return [
             record['telegram_id'] if record['telegram_id'] else record['id'],
             record['name'],
-            float(record['hourly_wage']) if record['hourly_wage'] else 15.0,
-            float(record['sales_commission']) if record['sales_commission'] else 6.0,
-            record['id'],  # Active column (stores ID for legacy compatibility)
-            float(record['hush_balance']) if record['hush_balance'] else 0,
+            self._safe_float(record['hourly_wage'], default=15.0),
+            self._safe_float(record['sales_commission'], default=6.0),
+            record['id'],
+            self._safe_float(record['hush_balance']),
         ]

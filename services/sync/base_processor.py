@@ -132,6 +132,28 @@ class BaseSyncProcessor(ABC):
         # gspread 6.x returns None if not found (no exception)
         return worksheet.find(str(record_id), in_column=self.id_column)
 
+    # ---- Formatting helpers ----
+
+    @staticmethod
+    def _safe_float(val, default=0):
+        """Convert value to float, returning default if None."""
+        return float(val) if val is not None else default
+
+    @staticmethod
+    def _safe_str(val, default=''):
+        """Convert value to str, returning default if None."""
+        return str(val) if val is not None else default
+
+    @staticmethod
+    def _format_dt(val, fmt='%Y-%m-%d %H:%M:%S'):
+        """Format datetime, returning '' if None."""
+        return val.strftime(fmt) if val else ''
+
+    @staticmethod
+    def _bool_str(val):
+        """Convert bool to 'TRUE'/'FALSE' string."""
+        return 'TRUE' if val else 'FALSE'
+
     @abstractmethod
     def fetch_record(self, record_id: int) -> Optional[dict]:
         """Fetch record data from PostgreSQL.

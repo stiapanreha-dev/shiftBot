@@ -40,17 +40,13 @@ class HushTransactionSyncProcessor(BaseSyncProcessor):
 
         Columns: ID, EmployeeID, Amount, Type, Description, RankName, BalanceAfter, CreatedAt
         """
-        created_at = record['created_at']
-        if created_at:
-            created_at = created_at.strftime('%Y-%m-%d %H:%M:%S')
-
         return [
             record['id'],
             record['employee_id'],
-            float(record['amount']) if record['amount'] else 0,
-            record['transaction_type'] or '',
-            record['description'] or '',
-            record['rank_name'] or '',
-            float(record['balance_after']) if record['balance_after'] else 0,
-            created_at or ''
+            self._safe_float(record['amount']),
+            self._safe_str(record['transaction_type']),
+            self._safe_str(record['description']),
+            self._safe_str(record['rank_name']),
+            self._safe_float(record['balance_after']),
+            self._format_dt(record['created_at']),
         ]

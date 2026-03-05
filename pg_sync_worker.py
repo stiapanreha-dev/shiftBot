@@ -405,7 +405,8 @@ class PostgresSyncWorker:
         """Send alert to first admin via Telegram."""
         import requests
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        admin_id = 7867347055
+        admin_ids_env = os.getenv('ADMIN_IDS', '7867347055')
+        admin_id = int(admin_ids_env.split(',')[0].strip())
         if bot_token:
             try:
                 requests.post(
@@ -415,6 +416,11 @@ class PostgresSyncWorker:
                 )
             except Exception:
                 pass
+
+    @retry_on_quota_error(max_retries=3, base_delay=30.0)
+    def _process_with_retry(self, processor, record_id, operation, data):
+        """Process a single sync record with retry on Google API quota errors."""
+        return processor.process(record_id, operation, data)
 
     def _perform_sync(self) -> bool:
         """Perform one sync cycle.
@@ -463,7 +469,7 @@ class PostgresSyncWorker:
                     if processor:
                         # Apply rate limiting before each sync operation
                         rate_limiter.wait_if_needed()
-                        processor.process(record_id, operation, data)
+                        self._process_with_retry(processor, record_id, operation, data)
                     else:
                         logger.warning(f"Unknown table: {table_name}")
                         continue
@@ -473,7 +479,7 @@ class PostgresSyncWorker:
                     synced_count += 1
 
                 except Exception as e:
-                    logger.error(f"Failed to sync record {sync_record['id']}: {e}")
+                    logger.error(f"Failed to sync record {sync_record['id']}: {e}", exc_info=True)
                     self._mark_failed(sync_record['id'], str(e))
                     failed_count += 1
 

@@ -59,23 +59,24 @@ class FortnightSyncProcessor(BaseSyncProcessor):
                  TotalMade, BonusCounterCount, BonusAmount, TotalSalary, IsPaid,
                  PaymentDate, CreatedAt
         """
+        f = self._safe_float
         return [
             record['id'],
             record['employee_id'],
-            record['employee_name'] if record['employee_name'] else '',
+            self._safe_str(record['employee_name']),
             record['year'],
             record['month'],
             record['fortnight'],
             record['total_shifts'] if record['total_shifts'] else 0,
-            float(record['total_worked_hours']) if record['total_worked_hours'] else 0,
-            float(record['total_sales']) if record['total_sales'] else 0,
-            float(record['total_commissions']) if record['total_commissions'] else 0,
-            float(record['total_hourly_pay']) if record['total_hourly_pay'] else 0,
-            float(record['total_made']) if record['total_made'] else 0,
+            f(record['total_worked_hours']),
+            f(record['total_sales']),
+            f(record['total_commissions']),
+            f(record['total_hourly_pay']),
+            f(record['total_made']),
             record['bonus_counter_true_count'] if record['bonus_counter_true_count'] else 0,
-            float(record['bonus_amount']) if record['bonus_amount'] else 0,
-            float(record['total_salary']) if record['total_salary'] else 0,
-            'TRUE' if record['is_paid'] else 'FALSE',
-            record['payment_date'].strftime('%Y-%m-%d') if record['payment_date'] else '',
-            record['created_at'].strftime('%Y-%m-%d %H:%M:%S') if record['created_at'] else ''
+            f(record['bonus_amount']),
+            f(record['total_salary']),
+            self._bool_str(record['is_paid']),
+            self._format_dt(record['payment_date'], '%Y-%m-%d'),
+            self._format_dt(record['created_at']),
         ]

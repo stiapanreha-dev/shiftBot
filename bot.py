@@ -1,6 +1,7 @@
 """Telegram Shift Tracking Bot - Main entry point."""
 
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 from telegram.ext import (
     Application,
@@ -76,7 +77,7 @@ def main() -> None:
         logger.info("Configuration validated successfully")
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
-        return
+        sys.exit(1)
 
     # Create application
     application = Application.builder().token(Config.BOT_TOKEN).build()

@@ -41,8 +41,8 @@ class BonusSyncProcessor(BaseSyncProcessor):
             record['id'],
             record['employee_id'],
             record['bonus_type'],
-            float(record['value']) if record['value'] else 0,
-            'TRUE' if record['applied'] else 'FALSE',
-            record['shift_id'] if record['shift_id'] else '',
-            record['created_at'].strftime('%Y-%m-%d %H:%M:%S') if record['created_at'] else ''
+            self._safe_float(record['value']),
+            self._bool_str(record['applied']),
+            self._safe_str(record['shift_id']),
+            self._format_dt(record['created_at']),
         ]
