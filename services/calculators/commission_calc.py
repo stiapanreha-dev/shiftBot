@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +25,9 @@ class CommissionResult:
         """Get formatted breakdown string for display.
 
         Returns:
-            String like '10.00% (Tier B: 8.0% +2.0% bonus)'
+            String like '10.00% (Base: 7.0% +2.0% bonus)'
         """
-        parts = [f"{self.tier_name}: {self.base_commission:.1f}%"]
+        parts = [f"{self.base_commission:.1f}%"]
 
         if self.bonus_pct > 0:
             parts.append(f"+{self.bonus_pct:.1f}% bonus")
@@ -45,14 +45,13 @@ class CommissionCalculator:
 
     NET_SALES_RATIO = Decimal('0.8')  # Net = 80% of gross
     DEFAULT_BASE_COMMISSION = Decimal('6.0')
-    DEFAULT_TIER_NAME = 'Tier C'
 
     def calculate(
         self,
         total_sales: Decimal,
         worked_hours: Decimal,
         hourly_wage: Decimal,
-        tier: Optional[Dict] = None,
+        base_commission_pct: Optional[Decimal] = None,
         active_bonuses: Optional[List[Dict]] = None,
         apply_bonuses: bool = True
     ) -> CommissionResult:
@@ -62,20 +61,16 @@ class CommissionCalculator:
             total_sales: Total sales amount
             worked_hours: Hours worked
             hourly_wage: Hourly wage rate
-            tier: Employee's commission tier dict with 'name' and 'percentage'
+            base_commission_pct: Base commission percentage from employee settings
             active_bonuses: List of active bonus dicts
             apply_bonuses: Whether to apply bonuses (False for recalculations)
 
         Returns:
             CommissionResult with all calculated values
         """
-        # Get base commission from tier
-        if tier:
-            base_commission = Decimal(str(tier.get('percentage', self.DEFAULT_BASE_COMMISSION)))
-            tier_name = tier.get('name', self.DEFAULT_TIER_NAME)
-        else:
-            base_commission = self.DEFAULT_BASE_COMMISSION
-            tier_name = self.DEFAULT_TIER_NAME
+        # Get base commission from employee settings
+        base_commission = base_commission_pct if base_commission_pct is not None else self.DEFAULT_BASE_COMMISSION
+        tier_name = f"Base: {base_commission}%"
 
         # Start with base commission
         commission_pct = base_commission

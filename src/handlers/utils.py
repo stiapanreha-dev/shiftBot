@@ -48,21 +48,13 @@ def get_commission_breakdown(
     sheets = sheets_service
     commission_pct = float(commission_pct)
 
-    # Get tier info
-    tier_name = CommissionCalculator.DEFAULT_TIER_NAME
+    # Get base commission from employee settings
     base_commission = float(CommissionCalculator.DEFAULT_BASE_COMMISSION)
     try:
-        tier = sheets.get_employee_tier(employee_id)
-        if tier:
-            tier_name = tier.get('name', tier_name)
-            base_commission = float(tier.get('percentage', base_commission))
+        settings = sheets.get_employee_settings(employee_id)
+        base_commission = float(settings.get("Sales commission", base_commission))
     except Exception:
-        try:
-            settings = sheets.get_employee_settings(employee_id)
-            base_commission = float(settings.get("Sales commission", base_commission))
-            tier_name = "Base"
-        except Exception:
-            pass
+        pass
 
     # Get bonus percentage if shift_id provided
     bonus_pct = 0.0
@@ -76,7 +68,7 @@ def get_commission_breakdown(
             logger.error(f"Failed to get bonus breakdown: {e}")
 
     # Format breakdown string
-    parts = [f"{tier_name}: {base_commission:.1f}%"]
+    parts = [f"{base_commission:.1f}%"]
     if bonus_pct > 0:
         parts.append(f"+{bonus_pct:.1f}% bonus")
 

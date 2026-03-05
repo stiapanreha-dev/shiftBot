@@ -164,11 +164,8 @@ class PostgresService:
                 settings = self.get_employee_settings(employee_id)
             hourly_wage = Decimal(str(settings.get("Hourly wage", 15.0)))
 
-            # Check and update tier if needed (beginning of month)
-            self._check_and_update_tier(employee_id, shift_date_normalized)
-
-            # Get tier and bonuses for calculation
-            tier = self.get_employee_tier(employee_id)
+            # Get base commission from employee settings
+            base_commission_pct = Decimal(str(settings.get("Sales commission", 6.0)))
             active_bonuses = self.get_active_bonuses(employee_id) if clock_out else []
 
             # Use CommissionCalculator for all commission logic
@@ -176,7 +173,7 @@ class PostgresService:
                 total_sales=total_sales,
                 worked_hours=worked_hours,
                 hourly_wage=hourly_wage,
-                tier=tier,
+                base_commission_pct=base_commission_pct,
                 active_bonuses=active_bonuses,
                 apply_bonuses=bool(clock_out)
             )
@@ -255,7 +252,7 @@ class PostgresService:
             except Exception as e:
                 logger.warning(f"Failed to update fortnight totals: {e}")
 
-            logger.info(f"✓ Created shift {shift_id} for employee {employee_id} (tier: {tier['name'] if tier else 'N/A'}, rolling_avg: {rolling_average}, bonus_counter: {bonus_counter})")
+            logger.info(f"✓ Created shift {shift_id} for employee {employee_id} (commission: {base_commission_pct}%, rolling_avg: {rolling_average}, bonus_counter: {bonus_counter})")
             return shift_id
 
         except Exception as e:
@@ -778,25 +775,15 @@ class PostgresService:
         cursor = conn.cursor()
 
         try:
-            # Get default tier (Tier C - min_amount = 0)
-            cursor.execute("""
-                SELECT id, percentage FROM base_commissions
-                WHERE min_amount = 0 AND is_active = TRUE
-                LIMIT 1
-            """)
-            default_tier = cursor.fetchone()
-            tier_id = default_tier['id'] if default_tier else 3
-            commission = float(default_tier['percentage']) if default_tier else 6.0
-
             # Set id = telegram_id so foreign keys in shifts work correctly
             cursor.execute("""
-                INSERT INTO employees (id, name, telegram_id, is_active, base_commission_id, sales_commission)
-                VALUES (%s, %s, %s, TRUE, %s, %s)
+                INSERT INTO employees (id, name, telegram_id, is_active, sales_commission)
+                VALUES (%s, %s, %s, TRUE, 6.0)
                 ON CONFLICT (id) DO NOTHING
-            """, (telegram_id, name, telegram_id, tier_id, commission))
+            """, (telegram_id, name, telegram_id))
 
             conn.commit()
-            logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id}, tier_id={tier_id}, commission={commission}%)")
+            logger.info(f"✓ Auto-created employee: {name} (telegram_id={telegram_id}, commission=6.0%)")
 
             # Invalidate cache
             if self.cache_manager:
@@ -1547,232 +1534,6 @@ class PostgresService:
             cursor.close()
             conn.close()
 
-    # ========== Base Commissions (Tiers) ==========
-
-    def get_base_commissions(self) -> List[Dict]:
-        """Get all commission tiers.
-
-        Returns:
-            List of tier dicts
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute("""
-                SELECT * FROM base_commissions
-                WHERE is_active = TRUE
-                ORDER BY display_order ASC
-            """)
-
-            tiers = cursor.fetchall()
-            return [dict(t) for t in tiers]
-
-        finally:
-            cursor.close()
-            conn.close()
-
-    def get_employee_tier(self, employee_id: int) -> Optional[Dict]:
-        """Get current tier for employee.
-
-        Args:
-            employee_id: Employee ID
-
-        Returns:
-            Tier dict with id, name, percentage or None
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute("""
-                SELECT bc.id, bc.name, bc.percentage, bc.min_amount, bc.max_amount
-                FROM employees e
-                JOIN base_commissions bc ON e.base_commission_id = bc.id
-                WHERE e.telegram_id = %s AND e.is_active = TRUE
-            """, (employee_id,))
-
-            tier = cursor.fetchone()
-            if tier:
-                return dict(tier)
-
-            # Default to Tier C if no tier assigned
-            cursor.execute("""
-                SELECT id, name, percentage, min_amount, max_amount
-                FROM base_commissions
-                WHERE name = 'Tier C' AND is_active = TRUE
-                LIMIT 1
-            """)
-            default_tier = cursor.fetchone()
-            return dict(default_tier) if default_tier else None
-
-        finally:
-            cursor.close()
-            conn.close()
-
-    def calculate_employee_tier(self, employee_id: int, year: int, month: int) -> int:
-        """Calculate tier based on PREVIOUS month's total sales.
-
-        Args:
-            employee_id: Employee ID
-            year: Year to check
-            month: Month to check (tier is based on previous month)
-
-        Returns:
-            base_commission_id for the tier
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-
-        try:
-            # Calculate previous month
-            if month == 1:
-                prev_year = year - 1
-                prev_month = 12
-            else:
-                prev_year = year
-                prev_month = month - 1
-
-            # Get total sales for previous month
-            cursor.execute("""
-                SELECT COALESCE(SUM(total_sales), 0) as total
-                FROM shifts
-                WHERE employee_id = %s
-                  AND EXTRACT(YEAR FROM date) = %s
-                  AND EXTRACT(MONTH FROM date) = %s
-            """, (employee_id, prev_year, prev_month))
-
-            result = cursor.fetchone()
-            total_sales = float(result['total']) if result else 0.0
-
-            # Find matching tier
-            cursor.execute("""
-                SELECT id FROM base_commissions
-                WHERE is_active = TRUE
-                  AND %s >= min_amount
-                  AND %s <= max_amount
-                ORDER BY display_order
-                LIMIT 1
-            """, (total_sales, total_sales))
-
-            tier = cursor.fetchone()
-            if tier:
-                return tier['id']
-
-            # Default to Tier C
-            cursor.execute("SELECT id FROM base_commissions WHERE name = 'Tier C' LIMIT 1")
-            default = cursor.fetchone()
-            return default['id'] if default else 3
-
-        finally:
-            cursor.close()
-            conn.close()
-
-    def update_employee_tier(self, employee_id: int, year: int = None, month: int = None) -> Dict:
-        """Update employee's tier based on previous month sales.
-
-        Args:
-            employee_id: Employee ID
-            year: Year (default: current)
-            month: Month (default: current)
-
-        Returns:
-            Dict with old_tier, new_tier, changed
-        """
-        if year is None or month is None:
-            today = date.today()
-            year = today.year
-            month = today.month
-
-        conn = self._get_conn()
-        cursor = conn.cursor()
-
-        try:
-            # Get current tier
-            cursor.execute("""
-                SELECT base_commission_id FROM employees
-                WHERE telegram_id = %s
-            """, (employee_id,))
-            current = cursor.fetchone()
-            old_tier_id = current['base_commission_id'] if current else None
-
-            # Calculate new tier
-            new_tier_id = self.calculate_employee_tier(employee_id, year, month)
-
-            # Update if changed
-            if old_tier_id != new_tier_id:
-                cursor.execute("""
-                    UPDATE employees
-                    SET base_commission_id = %s,
-                        last_tier_update = %s,
-                        updated_at = now()
-                    WHERE telegram_id = %s
-                """, (new_tier_id, date.today(), employee_id))
-                conn.commit()
-                logger.info(f"Updated tier for employee {employee_id}: {old_tier_id} -> {new_tier_id}")
-
-            # Get tier names for return
-            old_tier_name = None
-            new_tier_name = None
-
-            if old_tier_id:
-                cursor.execute("SELECT name FROM base_commissions WHERE id = %s", (old_tier_id,))
-                r = cursor.fetchone()
-                old_tier_name = r['name'] if r else None
-
-            cursor.execute("SELECT name FROM base_commissions WHERE id = %s", (new_tier_id,))
-            r = cursor.fetchone()
-            new_tier_name = r['name'] if r else None
-
-            return {
-                'old_tier_id': old_tier_id,
-                'new_tier_id': new_tier_id,
-                'old_tier': old_tier_name,
-                'new_tier': new_tier_name,
-                'changed': old_tier_id != new_tier_id
-            }
-
-        finally:
-            cursor.close()
-            conn.close()
-
-    def _check_and_update_tier(self, employee_id: int, shift_date: str) -> None:
-        """Check if tier needs update (beginning of month) and update if needed.
-
-        Args:
-            employee_id: Employee ID
-            shift_date: Shift date string (YYYY-MM-DD or YYYY/MM/DD)
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
-
-        try:
-            # Parse shift date
-            shift_dt = DateFormatter.parse_date(shift_date)
-
-            # Check last tier update
-            cursor.execute("""
-                SELECT last_tier_update FROM employees
-                WHERE telegram_id = %s
-            """, (employee_id,))
-            result = cursor.fetchone()
-
-            last_update = result['last_tier_update'] if result else None
-
-            # Update if: no previous update, or last update was in a different month
-            should_update = (
-                last_update is None or
-                last_update.year != shift_dt.year or
-                last_update.month != shift_dt.month
-            )
-
-            if should_update:
-                self.update_employee_tier(employee_id, shift_dt.year, shift_dt.month)
-
-        finally:
-            cursor.close()
-            conn.close()
-
     # ========== Rolling Average & Bonus Counter ==========
 
     def calculate_rolling_average(self, employee_id: int, shift_date: str) -> Decimal:
@@ -2484,6 +2245,59 @@ class PostgresService:
             result = cursor.fetchone()
             return result['id'] if result else None
 
+        finally:
+            cursor.close()
+            conn.close()
+
+    def reset_monthly_hush_balances(self) -> int:
+        """Reset hush_balance to 0 for all employees (monthly reset on 1st).
+
+        Creates a monthly_reset transaction for each employee with balance > 0,
+        then sets their balance to 0.
+
+        Returns:
+            Number of employees whose balance was reset
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        try:
+            # Get employees with positive balance
+            cursor.execute("""
+                SELECT id, name, COALESCE(hush_balance, 0) as balance
+                FROM employees
+                WHERE hush_balance > 0 AND is_active = TRUE
+            """)
+            employees = cursor.fetchall()
+
+            if not employees:
+                logger.info("No employees with positive hush_balance to reset")
+                return 0
+
+            # Create monthly_reset transaction for each
+            for emp in employees:
+                cursor.execute("""
+                    INSERT INTO hush_transactions
+                    (employee_id, amount, transaction_type, description, balance_after)
+                    VALUES (%s, %s, 'monthly_reset', 'Monthly balance reset', 0)
+                """, (emp['id'], -emp['balance']))
+
+            # Reset all balances
+            cursor.execute("""
+                UPDATE employees
+                SET hush_balance = 0, updated_at = now()
+                WHERE hush_balance > 0 AND is_active = TRUE
+            """)
+            count = cursor.rowcount
+
+            conn.commit()
+            logger.info(f"Reset hush_balance for {count} employees")
+            return count
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to reset monthly hush balances: {e}")
+            raise
         finally:
             cursor.close()
             conn.close()

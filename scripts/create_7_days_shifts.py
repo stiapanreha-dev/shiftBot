@@ -25,11 +25,10 @@ def main():
 
     # Get employee settings
     settings = service.get_employee_settings(employee_id)
-    tier = service.get_employee_tier(employee_id)
 
     print(f"\nEmployee: {employee_name}")
     print(f"Hourly wage: ${settings['Hourly wage']}")
-    print(f"Tier: {tier['name']} ({tier['percentage']}%)")
+    print(f"Commission: {settings['Sales commission']}%")
     print()
 
     created_shifts = []

@@ -60,23 +60,23 @@ class TestShiftCreationIntegration:
             cursor.close()
             conn.close()
 
-    def _create_test_employee(self, hourly_wage: float = 15.0, tier_id: int = 3):
+    def _create_test_employee(self, hourly_wage: float = 15.0, sales_commission: float = 6.0):
         """Create test employee with known settings.
 
         Args:
             hourly_wage: Hourly wage rate
-            tier_id: Base commission tier ID (1=Tier A 4%, 2=Tier B 5%, 3=Tier C 6%)
+            sales_commission: Base commission percentage
         """
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
             cursor.execute("""
-                INSERT INTO employees (id, name, telegram_id, hourly_wage, sales_commission, base_commission_id, is_active)
-                VALUES (%s, %s, %s, %s, 8.0, %s, TRUE)
+                INSERT INTO employees (id, name, telegram_id, hourly_wage, sales_commission, is_active)
+                VALUES (%s, %s, %s, %s, %s, TRUE)
                 ON CONFLICT (id) DO UPDATE SET
                     hourly_wage = EXCLUDED.hourly_wage,
-                    base_commission_id = EXCLUDED.base_commission_id
-            """, (self.test_employee_id, "Test Integration", self.test_employee_id, hourly_wage, tier_id))
+                    sales_commission = EXCLUDED.sales_commission
+            """, (self.test_employee_id, "Test Integration", self.test_employee_id, hourly_wage, sales_commission))
             conn.commit()
         finally:
             cursor.close()
@@ -207,24 +207,14 @@ class TestShiftCreationIntegration:
         assert Decimal(str(shift['total_made'])) == expected_total_made
 
     def test_shift_tier_a_commission(self):
-        """Test shift with Tier A (4%) commission.
+        """Test shift uses sales_commission from employee settings.
 
-        Tier A is for employees with $100K-$300K monthly sales in PREVIOUS month.
-        Per TZ: tier is calculated from previous month's total_sales.
+        Commission is now taken directly from employees.sales_commission field.
         """
-        # Setup: Employee with manually set Tier A
-        # NOTE: Tier is recalculated from previous month's sales, so we need to
-        # either create previous month sales history OR test this directly
-        self._create_test_employee(hourly_wage=15.0, tier_id=1)
+        # Setup: Employee with custom commission 7%
+        self._create_test_employee(hourly_wage=15.0, sales_commission=7.0)
 
-        # Directly verify tier assignment works
-        tier = self.service.get_employee_tier(self.test_employee_id)
-
-        # Since employee has no previous month sales, tier will be recalculated to Tier C
-        # This is CORRECT per TZ - tier is based on previous month performance
-        # To test Tier A, we would need $100K+ in previous month
-
-        # Create shift with default tier
+        # Create shift
         products = {"Chloe": 1000}
         shift_data = self._create_shift_data(products, clock_in_hour=9, clock_out_hour=17)
 
@@ -232,11 +222,10 @@ class TestShiftCreationIntegration:
         self.created_shift_ids.append(shift_id)
         shift = self.service.get_shift_by_id(shift_id)
 
-        # Without previous month history, tier defaults to Tier C (6%)
-        # This test validates the DEFAULT behavior - new employees start at Tier C
-        expected_commission_pct = Decimal('6.0')  # Tier C (default for new employees)
+        # Commission should match employee's sales_commission (7%)
+        expected_commission_pct = Decimal('7.0')
         assert Decimal(str(shift['commission_pct'])) == expected_commission_pct, \
-            f"New employee should default to Tier C (6%), got {shift['commission_pct']}"
+            f"Employee with 7% commission should get 7%, got {shift['commission_pct']}"
 
     def test_shift_tier_b_commission(self):
         """Test shift with Tier B (5%) commission.

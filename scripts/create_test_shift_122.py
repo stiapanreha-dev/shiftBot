@@ -30,9 +30,7 @@ def main():
     print(f"  Name: {settings['employee_name']}")
     print(f"  Hourly wage: ${settings['Hourly wage']}")
 
-    # Get tier
-    tier = service.get_employee_tier(employee_id)
-    print(f"  Tier: {tier['name']} ({tier['percentage']}%)")
+    print(f"  Commission: {settings['Sales commission']}%")
 
     # Shift data - exactly as bot creates it
     # Format: YYYY/MM/DD HH:MM:SS

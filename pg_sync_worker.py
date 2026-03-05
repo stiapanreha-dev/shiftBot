@@ -134,6 +134,7 @@ class PostgresSyncWorker:
         self.sync_count = 0
         self.last_sync_time = None
         self.error_count = 0
+        self.last_hush_reset_month = None  # (year, month) of last hush_balance reset
 
         # Database connection parameters
         self.db_params = {
@@ -370,6 +371,36 @@ class PostgresSyncWorker:
         except Exception as e:
             logger.error(f"Queue health check failed: {e}")
 
+    def _check_monthly_hush_reset(self):
+        """Reset hush_balance on 1st of each month (once per month)."""
+        now = datetime.now()
+        current_month = (now.year, now.month)
+
+        if now.day != 1:
+            return
+        if self.last_hush_reset_month == current_month:
+            return
+
+        try:
+            if not self._ensure_db_connection():
+                return
+
+            from services.postgres_service import PostgresService
+            service = PostgresService()
+            count = service.reset_monthly_hush_balances()
+
+            self.last_hush_reset_month = current_month
+            logger.info(f"Monthly hush_balance reset: {count} employees reset")
+
+            if count > 0:
+                self._send_admin_alert(
+                    f"🔄 Monthly HUSH reset completed\nReset {count} employee(s) balance to 0"
+                )
+        except Exception as e:
+            logger.error(f"Failed monthly hush_balance reset: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def _send_admin_alert(self, message: str):
         """Send alert to first admin via Telegram."""
         import requests
@@ -397,6 +428,9 @@ class PostgresSyncWorker:
             logger.info("=" * 70)
 
             start_time = time.time()
+
+            # Check monthly hush_balance reset (1st of each month)
+            self._check_monthly_hush_reset()
 
             # Reset permanently failed records before fetching pending
             self._reset_stale_failed()
