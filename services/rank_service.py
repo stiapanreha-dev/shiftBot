@@ -476,47 +476,20 @@ class RankService:
         return "🎁 Special bonus"
 
     def get_all_ranks_info(self) -> str:
-        """Get formatted information about all ranks with HUSH rewards.
-
-        Returns:
-            Formatted string with all ranks info.
-        """
-        ranks = self.sheets.get_ranks()
-
-        if not ranks:
-            return "No ranks information available."
-
-        message = "🏆 Rank System\n\n"
-        message += "💰 100 HUSH = $1\n\n"
-
-        for rank in ranks:
-            # Support both SheetsService and PostgresService formats
-            rank_name = rank.get("Rank Name") or rank.get("RankName") or rank.get("rank_name") or rank.get("name") or ""
-            rank_id = rank.get("id") or rank.get("ID")
-            min_amt = rank.get("Min Amount") or rank.get("MinTotalSales") or rank.get("min_total_sales") or rank.get("min_amount") or 0
-            max_amt = rank.get("Max Amount") or rank.get("MaxTotalSales") or rank.get("max_total_sales") or rank.get("max_amount") or 999999
-            emoji = rank.get("Emoji") or rank.get("emoji") or ""
-
-            # Format amount range
-            if float(max_amt) >= 999999:
-                amount_range = f"${int(float(min_amt)):,}+"
-            else:
-                amount_range = f"${int(float(min_amt)):,} – ${int(float(max_amt)):,}"
-
-            message += f"{rank_name} {emoji} ({amount_range})\n"
-
-            if rank_name == "Rookie":
-                message += "No bonuses — this is the baseline. Everyone starts here.\n"
-            else:
-                # Get HUSH rewards for this rank
-                if rank_id:
-                    rewards = self.sheets.get_hush_rank_rewards(rank_id)
-                    if rewards:
-                        non_zero = [r for r in rewards if r > 0]
-                        if non_zero:
-                            rewards_str = ", ".join([f"🪙 {r}" for r in non_zero])
-                            message += f"Possible HUSH rewards: {rewards_str}\n"
-
-            message += "\n"
-
-        return message
+        """Get formatted information about all ranks with HUSH rewards."""
+        return (
+            "🏆 Rank System\n\n"
+            "🪙 100 HUSH POINTS = $1\n\n"
+            "Rookie 🔰 ($0 – $1,999)\n"
+            "No bonuses — this is the baseline. Everyone starts here.\n\n"
+            "Hustler 💪 ($2,000 – $6,999)\n"
+            "Possible HUSH POINTS rewards: 🪙 100, 🪙 150, 🪙 250\n\n"
+            "Closer 💼 ($7,000 – $11,999)\n"
+            "Possible HUSH POINTS rewards: 🪙 400, 🪙 750, 🪙 1000\n\n"
+            "Shark 🦈 ($12,000 – $17,999)\n"
+            "Possible HUSH POINTS rewards: 🪙 750, 🪙 1000, 🪙 1500\n\n"
+            "King of Greed 👑 ($18,000 – $29,999)\n"
+            "Possible HUSH POINTS rewards: 🪙 1000, 🪙 1500, 🪙 2000\n\n"
+            "Chatting God 🔥 ($30,000+)\n"
+            "Possible HUSH POINTS rewards: 🪙 1500, 🪙 2500, 🪙 5000\n"
+        )
