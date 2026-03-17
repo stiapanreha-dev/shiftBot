@@ -173,6 +173,26 @@ class HushMixin:
             cursor.close()
             self._put_conn(conn)
 
+    def has_monthly_reset_occurred(self, year: int, month: int) -> bool:
+        """Check if monthly HUSH reset already happened for given year/month."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT EXISTS(
+                    SELECT 1 FROM hush_transactions
+                    WHERE transaction_type = 'monthly_reset'
+                      AND EXTRACT(YEAR FROM created_at) = %s
+                      AND EXTRACT(MONTH FROM created_at) = %s
+                    LIMIT 1
+                ) as already_reset
+            """, (year, month))
+            result = cursor.fetchone()
+            return bool(result['already_reset']) if result else False
+        finally:
+            cursor.close()
+            self._put_conn(conn)
+
     def reset_monthly_hush_balances(self) -> int:
         """Reset hush_balance to 0 for all employees (monthly reset on 1st)."""
         conn = self._get_conn()

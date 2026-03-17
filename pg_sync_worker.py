@@ -372,12 +372,16 @@ class PostgresSyncWorker:
             logger.error(f"Queue health check failed: {e}")
 
     def _check_monthly_hush_reset(self):
-        """Reset hush_balance on 1st of each month (once per month)."""
+        """Reset hush_balance at start of each month.
+
+        Uses DB as source of truth (has_monthly_reset_occurred) instead of
+        relying on in-memory state or day==1 check. This ensures the reset
+        happens even if the worker was down on the 1st.
+        """
         now = datetime.now()
         current_month = (now.year, now.month)
 
-        if now.day != 1:
-            return
+        # In-memory cache to avoid DB query every cycle
         if self.last_hush_reset_month == current_month:
             return
 
@@ -387,8 +391,12 @@ class PostgresSyncWorker:
 
             from services.postgres_service import PostgresService
             service = PostgresService()
-            count = service.reset_monthly_hush_balances()
 
+            if service.has_monthly_reset_occurred(now.year, now.month):
+                self.last_hush_reset_month = current_month
+                return
+
+            count = service.reset_monthly_hush_balances()
             self.last_hush_reset_month = current_month
             logger.info(f"Monthly hush_balance reset: {count} employees reset")
 
