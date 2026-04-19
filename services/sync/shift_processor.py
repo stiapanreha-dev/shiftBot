@@ -20,7 +20,7 @@ class ShiftSyncProcessor(BaseSyncProcessor):
 
     @property
     def last_column(self) -> str:
-        return 'T'  # 20 columns (added Model E - Madison)
+        return 'U'  # 21 columns (added Model F - Logan)
 
     def fetch_record(self, record_id: int) -> Optional[dict]:
         """Fetch shift with product data from PostgreSQL."""
@@ -46,7 +46,8 @@ class ShiftSyncProcessor(BaseSyncProcessor):
                     COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 2), 0) as model_b,
                     COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 3), 0) as model_c,
                     COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 9), 0) as model_d,
-                    COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 11), 0) as model_e
+                    COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 11), 0) as model_e,
+                    COALESCE((SELECT amount FROM shift_products WHERE shift_id = s.id AND product_id = 12), 0) as model_f
                 FROM shifts s
                 WHERE s.id = %s
             """, (record_id,))
@@ -57,7 +58,7 @@ class ShiftSyncProcessor(BaseSyncProcessor):
 
         Columns: ID, Date, EmployeeID, EmployeeName, ClockIn, ClockOut, WorkedHours,
                  TotalSales, NetSales, CommissionPct, TotalHourly, Commissions, TotalMade,
-                 RollingAverage, BonusCounter, ModelA, ModelB, ModelC, ModelD, ModelE
+                 RollingAverage, BonusCounter, ModelA, ModelB, ModelC, ModelD, ModelE, ModelF
         """
         f = self._safe_float
         dt = self._format_dt
@@ -82,4 +83,5 @@ class ShiftSyncProcessor(BaseSyncProcessor):
             f(record['model_c']),
             f(record['model_d']),
             f(record['model_e']),
+            f(record['model_f']),
         ]
