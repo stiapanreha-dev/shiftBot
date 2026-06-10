@@ -1,20 +1,19 @@
 [Unit]
 Description=Alex12060 Telegram Bot
-After=network.target
+After=network.target postgresql.service
+Wants=postgresql.service
 
 [Service]
 Type=simple
-User=lexun
-WorkingDirectory=/home/lexun/Alex12060
-ExecStart=/home/lexun/Alex12060/venv/bin/python3 /home/lexun/Alex12060/bot.py
+User=root
+WorkingDirectory=/opt/alex12060-bot
+EnvironmentFile=/opt/alex12060-bot/.env
+ExecStart=/opt/alex12060-bot/venv/bin/python /opt/alex12060-bot/bot.py
 Restart=always
 RestartSec=10
-StandardOutput=append:/home/lexun/Alex12060/logs/bot.log
-StandardError=append:/home/lexun/Alex12060/logs/bot.log
-
-# Security settings
+StandardOutput=append:/opt/alex12060-bot/logs/bot.log
+StandardError=append:/opt/alex12060-bot/logs/bot.log
 NoNewPrivileges=true
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

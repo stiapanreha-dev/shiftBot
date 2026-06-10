@@ -1,39 +1,21 @@
 [Unit]
-Description=Alex12060 Sync Worker - Bidirectional sync between SQLite and Google Sheets
-Documentation=file:///home/lexun/Alex12060/CHANGELOG_BIDIRECTIONAL_SYNC.md
-After=network.target
-# Make sync worker start after bot (optional dependency)
-Wants=alex12060-bot.service
+Description=Alex12060 Sync Worker - PostgreSQL to Google Sheets
+After=network.target postgresql.service alex12060-bot.service
+Wants=postgresql.service
 
 [Service]
 Type=simple
-User=lexun
-WorkingDirectory=/home/lexun/Alex12060
-Environment="PYTHONUNBUFFERED=1"
-
-# Main command
-ExecStart=/home/lexun/Alex12060/venv/bin/python3 /home/lexun/Alex12060/sync_worker.py --interval 300
-
-# Restart policy
+User=root
+WorkingDirectory=/opt/alex12060-bot
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/alex12060-bot/.env
+ExecStart=/opt/alex12060-bot/venv/bin/python /opt/alex12060-bot/pg_sync_worker.py --interval 300
 Restart=always
 RestartSec=30
-
-# Logging
-StandardOutput=append:/home/lexun/Alex12060/sync_worker.log
-StandardError=append:/home/lexun/Alex12060/sync_worker.log
-
-# Resource limits
-# Limit memory to 256MB (sync worker is lightweight)
 MemoryMax=256M
-
-# CPU limit (10% of one core)
-CPUQuota=10%
-
-# Security settings
+StandardOutput=append:/opt/alex12060-bot/logs/sync_worker.log
+StandardError=append:/opt/alex12060-bot/logs/sync_worker.log
 NoNewPrivileges=true
-PrivateTmp=true
-
-# Graceful shutdown
 TimeoutStopSec=30
 KillMode=mixed
 KillSignal=SIGTERM

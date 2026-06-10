@@ -1,13 +1,17 @@
 """Telegram Shift Tracking Bot - Main entry point."""
 
+import html
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
+import traceback
+from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ContextTypes,
     ConversationHandler,
     filters,
 )
@@ -29,40 +33,57 @@ from src.handlers import (
 from services.singleton import sheets_service
 
 
-# Setup logging to file and console
+# Setup logging
 def setup_logging():
-    """Configure logging to file and console with rotation."""
-    # Create formatter
+    """Configure logging to stdout only.
+
+    systemd redirects stdout to logs/bot.log (StandardOutput=append:),
+    logrotate rotates the file. Writing to the file from here as well
+    would duplicate every line.
+    """
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    # Root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-
-    # Clear existing handlers to avoid duplicates
     root_logger.handlers.clear()
 
-    # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
-
-    # File handler with rotation (10MB, keep 5 backups)
-    file_handler = RotatingFileHandler(
-        "logs/bot.log",
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
-        encoding="utf-8"
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-
-    # Add handlers
     root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
+
+    # httpx logs every getUpdates poll (every 10s) at INFO
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log unhandled handler exceptions, answer the user, alert the admin."""
+    logger = logging.getLogger(__name__)
+    logger.error("Unhandled exception while processing update", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Something went wrong. Please try again or send /start."
+            )
+        except Exception:
+            pass
+
+    if Config.ADMIN_IDS and context.error is not None:
+        tb = "".join(traceback.format_exception(
+            type(context.error), context.error, context.error.__traceback__
+        ))
+        try:
+            await context.bot.send_message(
+                chat_id=Config.ADMIN_IDS[0],
+                text=f"⚠️ Bot error:\n<pre>{html.escape(tb[-1500:])}</pre>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -152,6 +173,7 @@ def main() -> None:
     application.add_handler(conversation_handler)
     application.add_handler(CommandHandler("recalc_ranks", recalc_ranks_command))
     application.add_handler(CommandHandler("withdraw_hush", withdraw_hush_command))
+    application.add_error_handler(error_handler)
 
     # Log startup
     logger.info("Bot started - polling for updates...")
