@@ -39,20 +39,19 @@ from services.sync import (
     HushTransactionSyncProcessor,
 )
 
-# Setup logging
-# Use LOG_DIR env var, or 'logs' relative to script location
-log_dir = Path(os.getenv('LOG_DIR', Path(__file__).parent / 'logs'))
-log_dir.mkdir(parents=True, exist_ok=True)
-
+# Log to stdout only: systemd redirects it to logs/sync_worker.log
+# (StandardOutput=append:), logrotate rotates the file. Writing to the
+# file from here as well would duplicate every line.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_dir / 'sync_worker.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+# Session-level advisory lock key: guarantees a single worker instance
+# per database (a second copy would corrupt Sheets data).
+SYNC_WORKER_LOCK_KEY = 120601206
 
 
 class RateLimiter:
@@ -173,6 +172,22 @@ class PostgresSyncWorker:
         logger.info(f"Received signal {signum}, shutting down gracefully...")
         self.running = False
 
+    def _acquire_instance_lock(self) -> bool:
+        """Take the session advisory lock that enforces a single instance.
+
+        The lock lives on self.db_conn and is released automatically when
+        the connection dies, so it must be re-acquired after reconnect.
+        """
+        with self.db_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (SYNC_WORKER_LOCK_KEY,))
+            locked = cur.fetchone()[0]
+        if not locked:
+            logger.error(
+                "Another sync worker instance already holds the advisory lock "
+                f"({SYNC_WORKER_LOCK_KEY}) — refusing to run a second copy"
+            )
+        return locked
+
     def _reconnect_db(self) -> bool:
         """Reconnect to PostgreSQL.
 
@@ -186,6 +201,9 @@ class PostgresSyncWorker:
                 except Exception:
                     pass
             self.db_conn = psycopg2.connect(**self.db_params)
+            self.db_conn.autocommit = True
+            if not self._acquire_instance_lock():
+                return False
             self._update_processor_connections()
             logger.info("Database reconnected successfully")
             return True
@@ -221,7 +239,14 @@ class PostgresSyncWorker:
             # Connect to PostgreSQL
             logger.info("Connecting to PostgreSQL...")
             self.db_conn = psycopg2.connect(**self.db_params)
+            # autocommit: queue updates are single statements, and reads must
+            # not leave the connection 'idle in transaction' for the whole
+            # sleep interval (it blocks vacuum on sync_queue)
+            self.db_conn.autocommit = True
             logger.info("PostgreSQL connection established")
+
+            if not self._acquire_instance_lock():
+                return False
 
             # Connect to Google Sheets
             logger.info("Connecting to Google Sheets...")
@@ -378,7 +403,10 @@ class PostgresSyncWorker:
         relying on in-memory state or day==1 check. This ensures the reset
         happens even if the worker was down on the 1st.
         """
-        now = datetime.now()
+        # Business month boundary is Eastern Time (the bot operates in ET);
+        # server-local now() is UTC and would reset hours early
+        from src.time_utils import now_et
+        now = now_et()
         current_month = (now.year, now.month)
 
         # In-memory cache to avoid DB query every cycle
@@ -497,7 +525,6 @@ class PostgresSyncWorker:
             # Update stats
             self.sync_count += 1
             self.last_sync_time = datetime.now()
-            self.error_count = 0  # Reset error count on success
 
             logger.info("=" * 70)
             logger.info(f"Sync cycle #{self.sync_count} completed in {duration:.2f}s")
@@ -507,6 +534,17 @@ class PostgresSyncWorker:
             # Check queue health and alert if backlog is growing
             self._check_queue_health()
 
+            # A cycle where every record failed is a failure, not a success:
+            # otherwise a dead Sheets connection never trips the error limit
+            if failed_count > 0 and synced_count == 0:
+                self.error_count += 1
+                logger.error(
+                    f"All {failed_count} records failed this cycle "
+                    f"(consecutive failed cycles: {self.error_count})"
+                )
+                return False
+
+            self.error_count = 0  # Reset error count on success
             return True
 
         except Exception as e:
