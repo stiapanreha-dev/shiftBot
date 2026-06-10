@@ -1,17 +1,28 @@
 """Product and dynamic rate methods for PostgresService."""
 
 import logging
+import time
 from typing import Dict, List
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
+
+_PRODUCTS_CACHE_TTL = 300  # seconds
 
 
 class ProductMixin:
     """Product queries and dynamic rate calculations."""
 
     def get_products(self) -> List[str]:
-        """Get list of active products from database."""
+        """Get list of active products from database.
+
+        Cached in the instance: _shift_row_to_dict calls this per shift row,
+        which otherwise turns every shift listing into N+1 queries.
+        """
+        cached = getattr(self, '_products_cache', None)
+        if cached and time.time() - cached[1] < _PRODUCTS_CACHE_TTL:
+            return list(cached[0])
+
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
@@ -20,7 +31,9 @@ class ProductMixin:
                 WHERE is_active = TRUE
                 ORDER BY display_order, id
             """)
-            return [row['name'] for row in cursor.fetchall()]
+            names = [row['name'] for row in cursor.fetchall()]
+            self._products_cache = (names, time.time())
+            return names
         finally:
             cursor.close()
             self._put_conn(conn)

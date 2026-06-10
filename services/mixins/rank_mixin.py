@@ -61,6 +61,25 @@ class RankMixin:
             cursor.close()
             self._put_conn(conn)
 
+    def get_employees_with_activity(self, year: int, month: int) -> List[int]:
+        """Employee ids that have shifts or a rank record in the given month."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT DISTINCT employee_id FROM (
+                    SELECT employee_id FROM shifts
+                    WHERE EXTRACT(YEAR FROM date) = %s AND EXTRACT(MONTH FROM date) = %s
+                    UNION
+                    SELECT employee_id FROM employee_ranks
+                    WHERE year = %s AND month = %s
+                ) combined
+            """, (year, month, year, month))
+            return [row['employee_id'] for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            self._put_conn(conn)
+
     def get_employee_rank(self, employee_id: int, year: int, month: int) -> Optional[Dict]:
         """Get employee rank record for a specific month."""
         cache_key = f"{employee_id}_{year}_{month}"

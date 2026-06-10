@@ -34,28 +34,26 @@ class HushMixin:
         description: str,
         rank_id: int = None
     ) -> int:
-        """Add HUSH coins to employee balance."""
+        """Add HUSH coins to employee balance.
+
+        The balance update is a single atomic UPDATE: a concurrent
+        read-modify-write would silently lose one of the additions.
+        """
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
             cursor.execute("""
-                SELECT id, COALESCE(hush_balance, 0) as balance
-                FROM employees
+                UPDATE employees
+                SET hush_balance = COALESCE(hush_balance, 0) + %s, updated_at = now()
                 WHERE id = %s OR telegram_id = %s
-            """, (employee_id, employee_id))
+                RETURNING id, hush_balance
+            """, (Decimal(amount), employee_id, employee_id))
             result = cursor.fetchone()
             if not result:
                 raise ValueError(f"Employee {employee_id} not found")
 
             emp_id = result['id']
-            current_balance = Decimal(str(result['balance']))
-            new_balance = current_balance + Decimal(amount)
-
-            cursor.execute("""
-                UPDATE employees
-                SET hush_balance = %s, updated_at = now()
-                WHERE id = %s
-            """, (new_balance, emp_id))
+            new_balance = Decimal(str(result['hush_balance']))
 
             cursor.execute("""
                 INSERT INTO hush_transactions
@@ -84,35 +82,39 @@ class HushMixin:
         amount: int,
         description: str
     ) -> int:
-        """Withdraw HUSH coins from employee balance."""
+        """Withdraw HUSH coins from employee balance.
+
+        Atomic UPDATE with a balance guard: two concurrent withdrawals can
+        never overdraw the balance or lose each other's update.
+        """
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
             cursor.execute("""
-                SELECT id, COALESCE(hush_balance, 0) as balance
-                FROM employees
-                WHERE id = %s OR telegram_id = %s
-            """, (employee_id, employee_id))
+                UPDATE employees
+                SET hush_balance = COALESCE(hush_balance, 0) - %s, updated_at = now()
+                WHERE (id = %s OR telegram_id = %s)
+                  AND COALESCE(hush_balance, 0) >= %s
+                RETURNING id, hush_balance
+            """, (Decimal(amount), employee_id, employee_id, Decimal(amount)))
             result = cursor.fetchone()
             if not result:
-                raise ValueError(f"Employee {employee_id} not found")
-
-            emp_id = result['id']
-            current_balance = Decimal(str(result['balance']))
-
-            if current_balance < amount:
+                # Distinguish "no such employee" from "not enough coins"
+                cursor.execute("""
+                    SELECT COALESCE(hush_balance, 0) as balance
+                    FROM employees
+                    WHERE id = %s OR telegram_id = %s
+                """, (employee_id, employee_id))
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Employee {employee_id} not found")
                 raise ValueError(
                     f"Insufficient HUSH balance. "
-                    f"Current: {current_balance}, requested: {amount}"
+                    f"Current: {row['balance']}, requested: {amount}"
                 )
 
-            new_balance = current_balance - Decimal(amount)
-
-            cursor.execute("""
-                UPDATE employees
-                SET hush_balance = %s, updated_at = now()
-                WHERE id = %s
-            """, (new_balance, emp_id))
+            emp_id = result['id']
+            new_balance = Decimal(str(result['hush_balance']))
 
             cursor.execute("""
                 INSERT INTO hush_transactions

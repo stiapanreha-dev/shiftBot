@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import START
-from src.time_utils import now_et, parse_dt
+from src.time_utils import now_et
 from services.singleton import sheets_service
 from services.rank_service import RankService
 from src.keyboards import start_menu_keyboard
@@ -43,23 +43,6 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         rank_emoji = rank_service._get_rank_emoji(current_rank)
 
-        all_records = sheets.get_all_shifts()
-
-        total_sales_month = Decimal("0")
-        for record in all_records:
-            if str(record.get("EmployeeId")) == str(user.id):
-                record_date = record.get("Date", "")
-                if record_date:
-                    try:
-                        date_str = str(record_date).replace("-", "/")
-                        dt = parse_dt(date_str)
-                        if dt.year == year and dt.month == month:
-                            sales = record.get("Total sales", 0)
-                            if sales:
-                                total_sales_month += Decimal(str(sales))
-                    except Exception as e:
-                        logger.debug(f"Failed to parse date {record_date}: {e}")
-
         if now.day <= 15:
             current_fortnight = 1
             next_pay_day = now.replace(day=16)
@@ -83,27 +66,16 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             logger.warning(f"Failed to get fortnight data: {e}")
 
-        total_made_since_payday = Decimal("0")
         if current_fortnight == 1:
-            start_day = 1
-            end_day = 15
+            start_day, end_day = 1, 15
         else:
-            start_day = 16
-            end_day = 31
+            start_day, end_day = 16, 31
 
-        for record in all_records:
-            if str(record.get("EmployeeId")) == str(user.id):
-                record_date = record.get("Date", "")
-                if record_date:
-                    try:
-                        date_str = str(record_date).replace("-", "/")
-                        dt = parse_dt(date_str)
-                        if dt.year == year and dt.month == month and start_day <= dt.day <= end_day:
-                            made = record.get("Total made", 0)
-                            if made:
-                                total_made_since_payday += Decimal(str(made))
-                    except Exception as e:
-                        logger.debug(f"Failed to parse date {record_date}: {e}")
+        month_stats = sheets.get_employee_month_stats(
+            user.id, year, month, start_day, end_day
+        )
+        total_sales_month = month_stats['month_sales']
+        total_made_since_payday = month_stats['fortnight_made']
 
         total_with_bonus = total_made_since_payday + bonus_amount
 

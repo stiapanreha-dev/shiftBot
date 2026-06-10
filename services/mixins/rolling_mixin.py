@@ -12,6 +12,22 @@ logger = logging.getLogger(__name__)
 class RollingMixin:
     """Rolling average, bonus counter, and tomorrow target calculations."""
 
+    @staticmethod
+    def weighted_average(sales: list) -> Decimal:
+        """Weighted average where the i-th value (1 = oldest) has weight i.
+
+        Formula: Σ(i × sales_i) / Σ(1..N). Example for [100, 200, 300]:
+        (1×100 + 2×200 + 3×300) / 6 = 233.33
+        """
+        if not sales:
+            return Decimal('0')
+        n = len(sales)
+        sum_of_weights = Decimal(n * (n + 1) // 2)
+        total_weighted = sum(
+            Decimal(str(i)) * Decimal(str(s)) for i, s in enumerate(sales, start=1)
+        )
+        return (total_weighted / sum_of_weights).quantize(Decimal('0.01'))
+
     def calculate_rolling_average(self, employee_id: int, shift_date: str) -> Decimal:
         """Calculate weighted rolling average of total_sales for last 7 SHIFTS."""
         conn = self._get_conn()
@@ -32,19 +48,7 @@ class RollingMixin:
             """, (employee_id, shift_date_clean))
 
             shifts = cursor.fetchall()
-            if not shifts:
-                return Decimal('0')
-
-            n = len(shifts)
-            sum_of_weights = Decimal(str(n * (n + 1) // 2))
-            total_weighted = Decimal('0')
-            for i, shift in enumerate(shifts, start=1):
-                weight = Decimal(str(i))
-                sales = Decimal(str(shift['total_sales']))
-                total_weighted += weight * sales
-
-            rolling_avg = total_weighted / sum_of_weights
-            return rolling_avg.quantize(Decimal('0.01'))
+            return self.weighted_average([s['total_sales'] for s in shifts])
         finally:
             cursor.close()
             self._put_conn(conn)
@@ -75,19 +79,7 @@ class RollingMixin:
             """, (employee_id, today_clean))
 
             shifts = cursor.fetchall()
-            if not shifts:
-                return Decimal('0')
-
-            n = len(shifts)
-            sum_of_weights = Decimal(str(n * (n + 1) // 2))
-            total_weighted = Decimal('0')
-            for i, shift in enumerate(shifts, start=1):
-                weight = Decimal(str(i))
-                sales = Decimal(str(shift['total_sales']))
-                total_weighted += weight * sales
-
-            target = total_weighted / sum_of_weights
-            return target.quantize(Decimal('0.01'))
+            return self.weighted_average([s['total_sales'] for s in shifts])
         finally:
             cursor.close()
             self._put_conn(conn)

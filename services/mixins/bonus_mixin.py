@@ -125,9 +125,11 @@ class BonusMixin:
 
             result = []
             for bonus in bonuses:
+                # Same key convention as get_active_bonuses — handlers and
+                # CommissionCalculator read "Bonus Type"/"Value"
                 result.append({
-                    'BonusType': bonus['bonus_type'],
-                    'BonusPct': float(bonus['value']),
+                    'Bonus Type': bonus['bonus_type'],
+                    'Value': float(bonus['value']),
                     'ShiftID': bonus['shift_id'],
                 })
 

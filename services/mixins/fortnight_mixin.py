@@ -25,6 +25,12 @@ class FortnightMixin:
             else:
                 return date(year, month + 1, 1)
 
+    def update_fortnight_totals_for_date(self, employee_id: int, d: date) -> Dict:
+        """Recalculate totals of the fortnight that contains the given date."""
+        return self.update_fortnight_totals(
+            employee_id, d.year, d.month, self.get_fortnight_number(d.day)
+        )
+
     def get_or_create_fortnight(self, employee_id: int, year: int, month: int, fortnight: int) -> Dict:
         """Get or create fortnight record for employee."""
         conn = self._get_conn()

@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from config import (
+    Config,
     START, EDIT_PICK_SHIFT, EDIT_FIELD,
     EDIT_DATE_IN, EDIT_TIME_IN, EDIT_TIME_OUT, EDIT_TOTAL_SALES
 )
@@ -85,6 +86,16 @@ async def handle_edit_pick_shift(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text(
                 "❌ Shift not found. It may have been deleted."
             )
+            return ConversationHandler.END
+
+        # shift_id comes from callback data, which a client can forge:
+        # only the shift owner (or an admin) may edit it
+        user = update.effective_user
+        if shift.get("employee_id") != user.id and user.id not in Config.ADMIN_IDS:
+            logger.warning(
+                f"[EDIT] User {user.id} tried to edit foreign shift {shift_id}"
+            )
+            await query.message.reply_text("❌ You can only edit your own shifts.")
             return ConversationHandler.END
 
         context.user_data["edit_shift_id"] = shift_id
@@ -210,6 +221,20 @@ async def handle_edit_time_in(update: Update, context: ContextTypes.DEFAULT_TYPE
         if success:
             sheets.recalculate_worked_hours(shift_id)
 
+            # Salary aggregates depend on worked hours and the shift's date:
+            # recalc the new fortnight, and the old one if the date changed
+            try:
+                old_date_str = str(context.user_data.get("edit_shift_data", {}).get("Date", ""))
+                new_date = dt.date()
+                shift_emp_id = context.user_data["edit_shift_data"]["employee_id"]
+                sheets.update_fortnight_totals_for_date(shift_emp_id, new_date)
+                if old_date_str:
+                    old_date = parse_dt(old_date_str.replace("-", "/")).date()
+                    if old_date != new_date:
+                        sheets.update_fortnight_totals_for_date(shift_emp_id, old_date)
+            except Exception as e:
+                logger.warning(f"Failed to update fortnight totals after Clock in edit: {e}")
+
             from src.keyboards import main_menu_button
 
             updated_shift = sheets.get_shift_by_id(shift_id)
@@ -268,6 +293,14 @@ async def handle_edit_time_out(update: Update, context: ContextTypes.DEFAULT_TYP
 
         if success:
             sheets.recalculate_worked_hours(shift_id)
+
+            # Worked hours changed — the fortnight salary must follow
+            try:
+                shift_data = context.user_data["edit_shift_data"]
+                shift_date = parse_dt(str(shift_data["Date"]).replace("-", "/")).date()
+                sheets.update_fortnight_totals_for_date(shift_data["employee_id"], shift_date)
+            except Exception as e:
+                logger.warning(f"Failed to update fortnight totals after Clock out edit: {e}")
 
             from src.keyboards import main_menu_button
 

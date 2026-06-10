@@ -293,12 +293,18 @@ class ShiftMixin:
             raise ValueError(f"Unknown shift field: '{field}'. Allowed: {list(field_mapping.keys())}")
 
         try:
-            if pg_field in ['clock_in', 'clock_out']:
+            if pg_field == 'clock_in':
+                # date is derived from clock_in: keep them in sync, otherwise
+                # rolling average and month/fortnight attribution diverge
                 full_datetime = DateFormatter.to_db_datetime(value)
                 cursor.execute(
-                    sql.SQL("UPDATE shifts SET {} = %s, updated_at = now() WHERE id = %s").format(
-                        sql.Identifier(pg_field)
-                    ),
+                    "UPDATE shifts SET clock_in = %s, date = %s, updated_at = now() WHERE id = %s",
+                    (full_datetime, full_datetime.split()[0], shift_id)
+                )
+            elif pg_field == 'clock_out':
+                full_datetime = DateFormatter.to_db_datetime(value)
+                cursor.execute(
+                    "UPDATE shifts SET clock_out = %s, updated_at = now() WHERE id = %s",
                     (full_datetime, shift_id)
                 )
             else:
@@ -391,7 +397,8 @@ class ShiftMixin:
                 return False
 
             commission_pct = shift['commission_pct']
-            worked_hours = shift['worked_hours'] or Decimal('1')
+            # An open shift has no hours yet — it must not be paid as 1 hour
+            worked_hours = shift['worked_hours'] if shift['worked_hours'] is not None else Decimal('0')
             employee_id = shift['employee_id']
             shift_date = shift['date']
 
@@ -499,6 +506,42 @@ class ShiftMixin:
             "ORDER BY s.date DESC, s.clock_in DESC",
             ()
         )
+
+    def get_employee_month_stats(
+        self,
+        employee_id: int,
+        year: int,
+        month: int,
+        fortnight_start_day: int,
+        fortnight_end_day: int,
+    ) -> Dict:
+        """Monthly sales total + current-fortnight earnings in one query.
+
+        Replaces loading every shift of every employee into Python just to
+        sum two columns for one user.
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT
+                    COALESCE(SUM(total_sales), 0) AS month_sales,
+                    COALESCE(SUM(total_made) FILTER (
+                        WHERE EXTRACT(DAY FROM date) BETWEEN %s AND %s
+                    ), 0) AS fortnight_made
+                FROM shifts
+                WHERE employee_id = %s
+                  AND EXTRACT(YEAR FROM date) = %s
+                  AND EXTRACT(MONTH FROM date) = %s
+            """, (fortnight_start_day, fortnight_end_day, employee_id, year, month))
+            row = cursor.fetchone()
+            return {
+                'month_sales': Decimal(str(row['month_sales'])),
+                'fortnight_made': Decimal(str(row['fortnight_made'])),
+            }
+        finally:
+            cursor.close()
+            self._put_conn(conn)
 
     def get_models_from_shift(self, shift: Dict) -> List[str]:
         """Get list of product names that have sales in this shift."""

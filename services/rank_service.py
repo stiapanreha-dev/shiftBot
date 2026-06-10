@@ -265,7 +265,7 @@ class RankService:
         """
         ranks = self.sheets.get_ranks()
         for rank in ranks:
-            if rank.get("Rank Name") == rank_name:
+            if rank.get("RankName") == rank_name:
                 return rank.get("Emoji", "")
 
         return ""

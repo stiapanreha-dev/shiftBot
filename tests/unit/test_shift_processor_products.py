@@ -13,27 +13,40 @@ class TestShiftProcessorProducts:
         proc = ShiftSyncProcessor(spreadsheet=None, db_conn=None)
         assert proc.last_column == 'U'
 
-    def test_fetch_query_includes_all_product_ids(self):
-        """SQL query should reference product_id 1,2,3,9,11,12."""
-        source = inspect.getsource(ShiftSyncProcessor.fetch_record)
-        expected_ids = [1, 2, 3, 9, 11, 12]
-        for pid in expected_ids:
-            assert f'product_id = {pid}' in source, \
-                f"fetch_record missing product_id = {pid}"
+    def test_product_map_covers_known_ids(self):
+        """All historical product ids must map to their sheet slots."""
+        from services.sync.shift_processor import PRODUCT_ID_TO_SLOT
+        assert PRODUCT_ID_TO_SLOT == {
+            1: 'a', 2: 'b', 3: 'c', 9: 'd', 11: 'e', 12: 'f',
+        }
 
-    def test_fetch_query_aliases(self):
-        """SQL query should have aliases model_a through model_f."""
-        source = inspect.getsource(ShiftSyncProcessor.fetch_record)
-        for alias in ['model_a', 'model_b', 'model_c', 'model_d', 'model_e', 'model_f']:
-            assert f'as {alias}' in source, \
-                f"fetch_record missing alias '{alias}'"
+    def test_slots_match_sheet_columns(self):
+        """Every mapped slot must exist among the sheet model columns."""
+        from services.sync.shift_processor import (
+            PRODUCT_ID_TO_SLOT, SHEET_MODEL_SLOTS,
+        )
+        assert SHEET_MODEL_SLOTS == 'abcdef'
+        assert set(PRODUCT_ID_TO_SLOT.values()) <= set(SHEET_MODEL_SLOTS)
 
-    def test_format_row_includes_all_models(self):
-        """format_row should reference all 6 model keys."""
-        source = inspect.getsource(ShiftSyncProcessor.format_row)
-        for key in ['model_a', 'model_b', 'model_c', 'model_d', 'model_e', 'model_f']:
-            assert key in source, \
-                f"format_row missing key '{key}'"
+    def test_format_row_places_models_in_order(self):
+        """Model amounts must land in columns 15..20 in slot order."""
+        from datetime import datetime, date
+        record = {
+            'id': 1, 'date': date(2026, 4, 10),
+            'employee_id': 123, 'employee_name': 'Test',
+            'clock_in': datetime(2026, 4, 10, 9, 0),
+            'clock_out': datetime(2026, 4, 10, 17, 0),
+            'worked_hours': 8.0, 'total_sales': 500.0,
+            'net_sales': 460.0, 'commission_pct': 8.0,
+            'total_hourly': 120.0, 'commissions': 40.0,
+            'total_made': 160.0, 'rolling_average': 450.0,
+            'bonus_counter': True,
+            'model_a': 1.0, 'model_b': 2.0, 'model_c': 3.0,
+            'model_d': 4.0, 'model_e': 5.0, 'model_f': 6.0,
+        }
+        proc = ShiftSyncProcessor(spreadsheet=None, db_conn=None)
+        row = proc.format_row(record)
+        assert row[15:21] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
     def test_format_row_returns_21_columns(self):
         """format_row should return exactly 21 values."""

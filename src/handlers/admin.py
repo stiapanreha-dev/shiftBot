@@ -30,28 +30,13 @@ async def recalc_ranks_command(update: Update, context: ContextTypes.DEFAULT_TYP
     year, month = now.year, now.month
 
     try:
-        conn = sheets._get_conn()
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT DISTINCT employee_id FROM (
-                SELECT employee_id FROM shifts
-                WHERE EXTRACT(YEAR FROM date) = %s AND EXTRACT(MONTH FROM date) = %s
-                UNION
-                SELECT employee_id FROM employee_ranks
-                WHERE year = %s AND month = %s
-            ) combined
-        """, (year, month, year, month))
-
-        employee_ids = [row['employee_id'] for row in cursor.fetchall()]
-        cursor.close()
-        conn.close()
+        employee_ids = sheets.get_employees_with_activity(year, month)
 
         updated = 0
         rank_changes = []
+        rank_service = RankService(sheets)
 
         for emp_id in employee_ids:
-            rank_service = RankService(sheets)
             rank_change = rank_service.check_and_update_rank(emp_id, year, month)
             updated += 1
 
