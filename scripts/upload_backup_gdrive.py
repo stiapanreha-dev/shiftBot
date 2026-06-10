@@ -16,7 +16,7 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
 
 API = "https://www.googleapis.com/drive/v3"
-UPLOAD_API = "https://upload.googleapis.com/upload/drive/v3"
+UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 
 DEFAULT_CREDENTIALS = os.environ.get(
     "GOOGLE_SHEETS_CREDENTIALS",
