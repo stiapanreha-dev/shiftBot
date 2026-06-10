@@ -36,7 +36,14 @@ else
     echo "$(date '+%F %T') WARNING: offsite copy to $OFFSITE_HOST failed" >&2
 fi
 
-# Google Drive copy: requires Drive API enabled in the service account project
-if ! "$BOT_DIR/venv/bin/python" "$BOT_DIR/scripts/upload_backup_gdrive.py" "$outfile"; then
-    echo "$(date '+%F %T') WARNING: Google Drive upload failed (Drive API enabled?)" >&2
+# Google Drive copy via rclone — OAuth of the personal Google account.
+# Service accounts have no storage quota since 2025, so the SA used for
+# Sheets sync cannot own files; rclone token lives in /root/.config/rclone/.
+GDRIVE_REMOTE="gdrive:alex12060-db-backups"
+GDRIVE_KEEP_DAYS=30
+if rclone copy "$outfile" "$GDRIVE_REMOTE/" --drive-use-trash=false; then
+    echo "$(date '+%F %T') Google Drive copy OK"
+    rclone delete "$GDRIVE_REMOTE/" --min-age "${GDRIVE_KEEP_DAYS}d" --drive-use-trash=false || true
+else
+    echo "$(date '+%F %T') WARNING: Google Drive copy failed" >&2
 fi
