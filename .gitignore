@@ -38,9 +38,10 @@ data/*.db
 .DS_Store
 Thumbs.db
 
-# Backups
+# Backups (DB dumps contain employee PII — never commit them)
 *.backup
 backup_*/
+backups/
 *.tar.gz
 
 # Test data
