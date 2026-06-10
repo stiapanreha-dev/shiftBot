@@ -22,9 +22,10 @@ echo "[2/5] Pushing to prod server..."
 git push prod "$BRANCH"
 
 # Stray copies use old code and corrupt data; the worker also takes a
-# pg advisory lock now, this is the second line of defence
+# pg advisory lock now, this is the second line of defence.
+# [p] bracket keeps pkill from matching the ssh shell running this command.
 echo "[3/5] Killing ALL sync_worker processes..."
-ssh "$SERVER" "pkill -9 -f pg_sync_worker || true"
+ssh "$SERVER" "pkill -9 -f '[p]g_sync_worker' || true"
 
 echo "[4/5] Restarting services..."
 ssh "$SERVER" "systemctl restart alex12060-bot alex12060-sync-worker"
