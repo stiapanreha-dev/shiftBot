@@ -3,6 +3,7 @@
 import pytest
 from datetime import datetime, date
 from decimal import Decimal
+from unittest.mock import MagicMock
 from services.sync.base_processor import BaseSyncProcessor
 
 
@@ -89,6 +90,64 @@ class TestBoolStr:
 
     def test_truthy_value(self, proc):
         assert proc._bool_str(1) == 'TRUE'
+
+
+class UpsertProcessor(ConcreteProcessor):
+    """Processor with a real record for exercising _handle_upsert."""
+
+    def fetch_record(self, record_id):
+        return {'id': record_id}
+
+    def format_row(self, record):
+        return [record['id'], 'data']
+
+
+class TestHandleUpsert:
+    """INSERT must not use values.append: with an active basic filter it
+    writes after the last VISIBLE row, silently overwriting hidden rows
+    (lost shifts 752, 837-840 on 2026-07-01..03)."""
+
+    @pytest.fixture
+    def proc(self):
+        return UpsertProcessor(spreadsheet=None, db_conn=None)
+
+    def test_insert_writes_past_real_end_of_data(self, proc):
+        worksheet = MagicMock()
+        worksheet.find.return_value = None  # record not in sheet yet
+        worksheet.get_all_values.return_value = [['ID'], ['1'], ['2']]
+
+        assert proc._handle_upsert(worksheet, 3) is True
+
+        worksheet.update.assert_called_once_with(
+            values=[[3, 'data']], range_name='A4:Z4')
+
+    def test_insert_never_uses_append_row(self, proc):
+        worksheet = MagicMock()
+        worksheet.find.return_value = None
+        worksheet.get_all_values.return_value = [['ID']]
+
+        proc._handle_upsert(worksheet, 1)
+
+        worksheet.append_row.assert_not_called()
+
+    def test_update_writes_existing_row_in_place(self, proc):
+        worksheet = MagicMock()
+        worksheet.find.return_value = MagicMock(row=5)
+
+        assert proc._handle_upsert(worksheet, 42) is True
+
+        worksheet.update.assert_called_once_with(
+            values=[[42, 'data']], range_name='A5:Z5')
+        worksheet.get_all_values.assert_not_called()
+
+    def test_missing_record_returns_false(self, proc):
+        worksheet = MagicMock()
+        base = ConcreteProcessor(spreadsheet=None, db_conn=None)
+
+        assert base._handle_upsert(worksheet, 1) is False
+
+        worksheet.update.assert_not_called()
+        worksheet.append_row.assert_not_called()
 
 
 class TestProcessorsUseHelpers:

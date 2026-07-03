@@ -111,11 +111,20 @@ class BaseSyncProcessor(ABC):
         cell = self._find_row(worksheet, record_id)
         if cell:
             range_str = f'A{cell.row}:{self.last_column}{cell.row}'
-            worksheet.update(range_str, [row_data])
+            worksheet.update(values=[row_data], range_name=range_str)
             logger.info(f"Updated {self.table_name} {record_id} in Google Sheets")
         else:
-            worksheet.append_row(row_data)
-            logger.info(f"Inserted {self.table_name} {record_id} to Google Sheets")
+            # No append_row here: values.append writes after the last VISIBLE
+            # row, so an active basic filter makes every insert silently
+            # overwrite the same hidden row (lost shifts 752, 837-840 on
+            # 2026-07-01..03). Write past the real end of data instead.
+            next_row = len(worksheet.get_all_values()) + 1
+            range_str = f'A{next_row}:{self.last_column}{next_row}'
+            worksheet.update(values=[row_data], range_name=range_str)
+            logger.info(
+                f"Inserted {self.table_name} {record_id} to Google Sheets "
+                f"(row {next_row})"
+            )
 
         return True
 
