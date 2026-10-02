@@ -15,6 +15,9 @@ class BaseSyncProcessor(ABC):
     Each subclass handles synchronization for a specific table.
     """
 
+    # Rows added at once when an insert runs past the end of the sheet grid
+    GRID_GROWTH_ROWS = 100
+
     def __init__(self, spreadsheet: gspread.Spreadsheet, db_conn):
         """Initialize processor.
 
@@ -119,6 +122,12 @@ class BaseSyncProcessor(ABC):
             # overwrite the same hidden row (lost shifts 752, 837-840 on
             # 2026-07-01..03). Write past the real end of data instead.
             next_row = len(worksheet.get_all_values()) + 1
+            # Unlike values.append, a range write does not grow the grid:
+            # once data fills the last row it fails with "exceeds grid
+            # limits" (EmployeeFortnights stuck at 100 rows on 2026-10-01).
+            if next_row > worksheet.row_count:
+                worksheet.add_rows(
+                    next_row - worksheet.row_count + self.GRID_GROWTH_ROWS - 1)
             range_str = f'A{next_row}:{self.last_column}{next_row}'
             worksheet.update(values=[row_data], range_name=range_str)
             logger.info(

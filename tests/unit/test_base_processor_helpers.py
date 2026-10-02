@@ -115,16 +115,45 @@ class TestHandleUpsert:
         worksheet = MagicMock()
         worksheet.find.return_value = None  # record not in sheet yet
         worksheet.get_all_values.return_value = [['ID'], ['1'], ['2']]
+        worksheet.row_count = 1000
 
         assert proc._handle_upsert(worksheet, 3) is True
 
         worksheet.update.assert_called_once_with(
             values=[[3, 'data']], range_name='A4:Z4')
+        worksheet.add_rows.assert_not_called()
+
+    def test_insert_grows_full_grid_before_writing(self, proc):
+        """A range write past the last grid row fails with "exceeds grid
+        limits" (EmployeeFortnights stuck at 100 rows on 2026-10-01)."""
+        worksheet = MagicMock()
+        worksheet.find.return_value = None
+        worksheet.get_all_values.return_value = [['ID']] + [[str(i)] for i in range(1, 100)]
+        worksheet.row_count = 100
+
+        assert proc._handle_upsert(worksheet, 100) is True
+
+        worksheet.add_rows.assert_called_once_with(proc.GRID_GROWTH_ROWS)
+        worksheet.update.assert_called_once_with(
+            values=[[100, 'data']], range_name='A101:Z101')
+
+    def test_insert_into_last_grid_row_does_not_grow(self, proc):
+        worksheet = MagicMock()
+        worksheet.find.return_value = None
+        worksheet.get_all_values.return_value = [['ID'], ['1']]
+        worksheet.row_count = 3
+
+        proc._handle_upsert(worksheet, 2)
+
+        worksheet.add_rows.assert_not_called()
+        worksheet.update.assert_called_once_with(
+            values=[[2, 'data']], range_name='A3:Z3')
 
     def test_insert_never_uses_append_row(self, proc):
         worksheet = MagicMock()
         worksheet.find.return_value = None
         worksheet.get_all_values.return_value = [['ID']]
+        worksheet.row_count = 1000
 
         proc._handle_upsert(worksheet, 1)
 
