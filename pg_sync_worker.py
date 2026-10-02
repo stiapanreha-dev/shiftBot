@@ -141,7 +141,7 @@ class PostgresSyncWorker:
             'port': int(os.getenv('DB_PORT', 5432)),
             'database': os.getenv('DB_NAME', 'alex12060'),
             'user': os.getenv('DB_USER', 'alex12060_user'),
-            'password': os.getenv('DB_PASSWORD', 'alex12060_pass'),
+            'password': os.environ['DB_PASSWORD'],
             'connect_timeout': 10,
             'keepalives': 1,
             'keepalives_idle': 60,

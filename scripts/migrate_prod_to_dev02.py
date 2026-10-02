@@ -25,6 +25,9 @@ Date: 2026-01-15
 import argparse
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv()
 
 MIGRATION_SQL = """
 -- =============================================================================
@@ -224,7 +227,7 @@ def main():
             port=int(os.getenv('DB_PORT', 5432)),
             database=os.getenv('DB_NAME', 'alex12060'),
             user=os.getenv('DB_USER', 'alex12060_user'),
-            password=os.getenv('DB_PASSWORD', 'alex12060_pass')
+            password=os.environ['DB_PASSWORD']
         )
         conn.autocommit = True
 

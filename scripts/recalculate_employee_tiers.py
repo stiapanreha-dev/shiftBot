@@ -19,6 +19,10 @@ import sys
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 def get_previous_month(reference_date=None):
     """Get previous month's year and month."""
@@ -191,7 +195,7 @@ def main():
         port=int(os.getenv('DB_PORT', 5432)),
         database=os.getenv('DB_NAME', 'alex12060'),
         user=os.getenv('DB_USER', 'alex12060_user'),
-        password=os.getenv('DB_PASSWORD', 'alex12060_pass')
+        password=os.environ['DB_PASSWORD']
     )
 
     try:

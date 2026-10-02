@@ -5,7 +5,10 @@ Apply Commission Rework migrations to PostgreSQL database.
 Usage:
     python apply_migrations.py [--dry-run] [--env DEV|PROD]
 
-Environment variables:
+PROD reads DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD from .env
+(DB_PASSWORD is required).
+
+DEV environment variables:
     POSTGRES_HOST - Database host (default: localhost)
     POSTGRES_PORT - Database port (default: 5432)
     POSTGRES_DB - Database name (default: alex12060)
@@ -20,6 +23,10 @@ import psycopg2
 from psycopg2 import sql, extras
 from pathlib import Path
 from datetime import datetime
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Migration files in order
 MIGRATIONS = [
@@ -36,11 +43,11 @@ def get_connection(env: str = "DEV"):
     """Get database connection based on environment."""
     if env == "PROD":
         return psycopg2.connect(
-            host="localhost",
-            port=5432,
-            database="alex12060",
-            user="alex12060_user",
-            password="alex12060_pass",
+            host=os.getenv("DB_HOST", "localhost"),
+            port=int(os.getenv("DB_PORT", 5432)),
+            database=os.getenv("DB_NAME", "alex12060"),
+            user=os.getenv("DB_USER", "alex12060_user"),
+            password=os.environ["DB_PASSWORD"],
             cursor_factory=extras.RealDictCursor
         )
     else:  # DEV

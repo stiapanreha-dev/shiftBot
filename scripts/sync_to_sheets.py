@@ -33,7 +33,7 @@ def main():
         port=int(os.getenv('DB_PORT', 5432)),
         database=os.getenv('DB_NAME', 'alex12060'),
         user=os.getenv('DB_USER', 'alex12060_user'),
-        password=os.getenv('DB_PASSWORD', 'alex12060_pass')
+        password=os.environ['DB_PASSWORD']
     )
     print("✓ Connected to PostgreSQL")
 
