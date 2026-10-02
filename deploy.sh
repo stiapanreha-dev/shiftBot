@@ -33,7 +33,7 @@ ssh "$SERVER" "systemctl restart alex12060-bot alex12060-sync-worker"
 echo "[5/5] Verifying..."
 sleep 3
 ssh "$SERVER" "systemctl is-active alex12060-bot alex12060-sync-worker"
-COUNT=$(ssh "$SERVER" "pgrep -fc pg_sync_worker || true")
+COUNT=$(ssh "$SERVER" "pgrep -fc '[p]g_sync_worker' || true")
 
 if [ "$COUNT" = "1" ]; then
     echo ""
